@@ -48,10 +48,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Go from go.mod
+      - name: Resolve lint Go version
+        id: goversion
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mod_go=$(
+            sed -nE 's/^go ([0-9]+\.[0-9]+)(\.[0-9]+)?$/\1/p' go.mod | head -n1
+          )
+
+          if [ -z "$mod_go" ]; then
+            echo "Failed to determine Go version from go.mod" >&2
+            exit 1
+          fi
+
+          min_lint_go="1.23"
+
+          lowest="$(printf '%s\n%s\n' "$mod_go" "$min_lint_go" | sort -V | head -n1)"
+          if [ "$lowest" = "$mod_go" ]; then
+            lint_go="$min_lint_go"
+          else
+            lint_go="$mod_go"
+          fi
+
+          echo "go_mod=$mod_go" >> "$GITHUB_OUTPUT"
+          echo "lint_go=$lint_go" >> "$GITHUB_OUTPUT"
+
+          echo "go.mod version: $mod_go"
+          echo "lint Go version: $lint_go"
+
+      - name: Set up Go for lint/coverage
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.goversion.outputs.lint_go }}
           cache: true
           cache-dependency-path: |
             go.sum
