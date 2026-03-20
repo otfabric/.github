@@ -1,0 +1,148 @@
+name: Go CI Reusable
+
+on:
+  workflow_call:
+    inputs:
+      go-versions:
+        required: false
+        type: string
+        default: '["1.21","1.22","1.23", "1.24", "1.25", "1.26"]'
+      primary-go-version:
+        required: false
+        type: string
+        default: "1.21"
+      codecov-name:
+        required: false
+        type: string
+        default: ""
+      test-exclude-regex:
+        required: false
+        type: string
+        default: "(/examples($|/)|/cmd($|/))"
+      timeout-minutes:
+        required: false
+        type: number
+        default: 15
+      run-codecov:
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      OTFABRIC_READ_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GOPRIVATE: github.com/otfabric/*
+
+concurrency:
+  group: go-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ${{ fromJSON(inputs.go-versions) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+
+      - name: Auth for private otfabric modules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.OTFABRIC_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Verify module files
+        run: |
+          go mod tidy
+          git diff --exit-code
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        if: matrix.go-version == inputs.primary-go-version
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.1.6
+          args: --timeout=5m
+
+      - name: Resolve test packages
+        id: pkgs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t pkgs < <(go list ./... | grep -Ev '${{ inputs.test-exclude-regex }}' || true)
+          if [ "${#pkgs[@]}" -eq 0 ]; then
+            echo "No test packages found after filtering" >&2
+            exit 1
+          fi
+          printf 'list=%s\n' "${pkgs[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: go test -count=1 -timeout=120s ${{ steps.pkgs.outputs.list }}
+
+      - name: Race test
+        run: go test -count=1 -timeout=120s -race ${{ steps.pkgs.outputs.list }}
+
+      - name: Coverage
+        if: matrix.go-version == inputs.primary-go-version
+        run: |
+          go test -count=1 -timeout=120s -coverprofile=coverage.out -covermode=set ${{ steps.pkgs.outputs.list }}
+          go tool cover -func=coverage.out | tee coverage.txt
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Add coverage summary
+        if: matrix.go-version == inputs.primary-go-version
+        run: |
+          {
+            echo "## Coverage Report"
+            echo
+            echo '```text'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifacts
+        if: matrix.go-version == inputs.primary-go-version
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-go-${{ matrix.go-version }}
+          path: |
+            coverage.out
+            coverage.txt
+            coverage.html
+
+      - name: Upload coverage to Codecov
+        if: matrix.go-version == inputs.primary-go-version && inputs.run-codecov && inputs.codecov-name != ''
+        uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true
+          files: coverage.out
+          flags: unittests
+          name: ${{ inputs.codecov-name }}
+          fail_ci_if_error: false
+          verbose: true
