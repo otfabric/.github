@@ -1,0 +1,689 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Go Binary Release — Reusable Workflow
+#
+# Cross-compiles Go binaries for multiple OS/arch targets and publishes them
+# as GitHub Release assets with SHA-256 checksums. Supports three modes:
+#
+#   bump=patch|minor|major  — Compute the next semver tag, validate, build,
+#                             and create a new GitHub Release with binaries.
+#   bump=none               — Rebuild binary assets for the latest existing
+#                             tag (useful for adding targets or fixing builds).
+#
+# RELEASE.md format (optional, same convention as go-package-release):
+#
+#   ## v1.2.0
+#   - Added feature X
+#   ---
+#
+# Caller example — new release:
+#
+#   jobs:
+#     release:
+#       uses: otfabric/.github/.github/workflows/go-binary-release.yml@main
+#       with:
+#         bump: patch
+#         binary-name: myapp
+#         main-path: ./cmd/myapp
+#       secrets:
+#         OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+#
+# Caller example — rebuild assets for existing tag:
+#
+#   jobs:
+#     rebuild:
+#       uses: otfabric/.github/.github/workflows/go-binary-release.yml@main
+#       with:
+#         bump: none
+#         binary-name: myapp
+#         main-path: ./cmd/myapp
+#         targets: '["linux/amd64","darwin/arm64"]'
+#       secrets:
+#         OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+#
+# Caller example — chained after package release (skip redundant tests):
+#
+#   jobs:
+#     package:
+#       uses: otfabric/.github/.github/workflows/go-package-release.yml@main
+#       with:
+#         bump: minor
+#       secrets:
+#         OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+#
+#     binary:
+#       needs: package
+#       uses: otfabric/.github/.github/workflows/go-binary-release.yml@main
+#       with:
+#         bump: none
+#         binary-name: myapp
+#         main-path: ./cmd/myapp
+#         run-tests: false
+#       secrets:
+#         OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+
+name: Go Binary Release
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: "Semver bump strategy: patch | minor | major | none (rebuild existing tag)."
+        required: true
+        type: string
+      binary-name:
+        description: "Base name of the output binary (e.g. myapp)."
+        required: true
+        type: string
+      main-path:
+        description: "Import path or directory of the main package (e.g. ./cmd/myapp)."
+        required: true
+        type: string
+      release-name-prefix:
+        description: >-
+          Optional prefix for the GitHub release title.
+          When set, the title becomes "<prefix> <tag>" (e.g. "MyApp v1.2.0").
+        required: false
+        type: string
+        default: ""
+      targets:
+        description: >-
+          JSON array of build targets. Supported:
+          linux/amd64, linux/arm64, linux/arm/v7,
+          darwin/amd64, darwin/arm64,
+          windows/amd64, windows/arm64.
+        required: false
+        type: string
+        default: '["linux/amd64","linux/arm64","linux/arm/v7","darwin/amd64","darwin/arm64","windows/amd64","windows/arm64"]'
+      cgo-enabled:
+        description: "Enable CGO during compilation."
+        required: false
+        type: boolean
+        default: false
+      timeout-minutes:
+        description: "Job-level timeout in minutes (applies to every job)."
+        required: false
+        type: number
+        default: 30
+      update-major-tag:
+        description: >-
+          Maintain a moving major-version tag (e.g. v1) pointing at the latest
+          release within that major.
+        required: false
+        type: boolean
+        default: false
+      replace-release-assets:
+        description: "Replace same-named assets (--clobber) when uploading to an existing release."
+        required: false
+        type: boolean
+        default: true
+      run-tests:
+        description: >-
+          Run tests and race-detector checks in the prepare phase.
+          Disable when CI or a prior package-release workflow already validated
+          the commit.
+        required: false
+        type: boolean
+        default: true
+      test-exclude-regex:
+        description: >-
+          Extended regex passed to grep -Ev to exclude packages from testing.
+          Only used when run-tests is true. Default excludes /examples/ only
+          (cmd/ is included since binary repos should test their entry points).
+        required: false
+        type: string
+        default: "(/examples($|/))"
+      run-vet:
+        description: "Run go vet during validation (only when run-tests is true)."
+        required: false
+        type: boolean
+        default: true
+      ldflags:
+        description: >-
+          Additional ldflags for go build. Shell variables VERSION, TAG, COMMIT,
+          and BUILD_DATE are available for substitution via envsubst.
+          Example: "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      version:
+        description: "Released version without v prefix (e.g. 1.2.3)."
+        value: ${{ jobs.prepare-release.outputs.version }}
+      tag:
+        description: "Git tag (e.g. v1.2.3)."
+        value: ${{ jobs.prepare-release.outputs.tag }}
+      previous-tag:
+        description: "Previous semver tag (e.g. v1.2.2)."
+        value: ${{ jobs.prepare-release.outputs.previous_tag }}
+    secrets:
+      OTFABRIC_READ_TOKEN:
+        description: "PAT with read access to private github.com/otfabric/* modules."
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  GOPRIVATE: github.com/otfabric/*
+
+concurrency:
+  group: go-binary-release-${{ github.repository }}-${{ github.ref }}-${{ inputs.binary-name }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Prepare: validate code, resolve version, and build the target matrix.
+  # ---------------------------------------------------------------------------
+  prepare-release:
+    name: Prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      major_tag: ${{ steps.version.outputs.major_tag }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+      mode: ${{ steps.version.outputs.mode }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify default branch
+        if: inputs.bump != 'none'
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CURRENT_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$CURRENT_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::Bumped releases are only allowed from the default branch ($DEFAULT_BRANCH). Current: $CURRENT_REF."
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Verify module tidiness
+        if: inputs.run-tests
+        shell: bash
+        run: |
+          go mod tidy
+          git diff --exit-code
+
+      - name: Download dependencies
+        shell: bash
+        run: go mod download
+
+      - name: Verify dependencies
+        shell: bash
+        run: go mod verify
+
+      - name: go vet
+        if: inputs.run-tests && inputs.run-vet
+        shell: bash
+        run: go vet ./...
+
+      - name: Resolve test packages
+        if: inputs.run-tests
+        id: pkgs
+        shell: bash
+        env:
+          EXCLUDE_REGEX: ${{ inputs.test-exclude-regex }}
+        run: |
+          set -euo pipefail
+          mapfile -t pkgs < <(go list ./... | grep -Ev "${EXCLUDE_REGEX}" || true)
+          if [ "${#pkgs[@]}" -eq 0 ]; then
+            echo "::error::No test packages found after exclusion filter"
+            exit 1
+          fi
+          printf 'list=%s\n' "${pkgs[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        if: inputs.run-tests
+        shell: bash
+        run: go test -count=1 -timeout=120s ${{ steps.pkgs.outputs.list }}
+
+      - name: Race test
+        if: inputs.run-tests
+        shell: bash
+        run: go test -count=1 -timeout=120s -race ${{ steps.pkgs.outputs.list }}
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          case "$BUMP" in
+            none|patch|minor|major) ;;
+            *)
+              echo "::error::Invalid bump strategy: $BUMP (expected none, patch, minor, or major)"
+              exit 1
+              ;;
+          esac
+
+          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)"
+
+          if [ "$BUMP" = "none" ]; then
+            if [ -z "$latest_tag" ]; then
+              echo "::error::bump=none requires an existing semver tag, but none was found"
+              exit 1
+            fi
+
+            tag="$latest_tag"
+            version="${tag#v}"
+            previous_tag="$latest_tag"
+            mode="existing"
+          else
+            if [ -z "$latest_tag" ]; then
+              latest_tag="v0.0.0"
+            fi
+
+            base_version="${latest_tag#v}"
+            IFS='.' read -r major minor patch <<< "$base_version"
+
+            case "$BUMP" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+            esac
+
+            version="${major}.${minor}.${patch}"
+            tag="v${version}"
+            previous_tag="$latest_tag"
+            mode="new"
+          fi
+
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Resolved version is not valid semver: $version"
+            exit 1
+          fi
+
+          major_tag="v${version%%.*}"
+
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version"           >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"                   >> "$GITHUB_OUTPUT"
+          echo "major_tag=$major_tag"       >> "$GITHUB_OUTPUT"
+          echo "mode=$mode"                 >> "$GITHUB_OUTPUT"
+
+      - name: Fail if new tag already exists
+        if: inputs.bump != 'none'
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists. Tags are immutable; choose a different bump."
+            exit 1
+          fi
+
+      - name: Build target matrix
+        id: matrix
+        shell: bash
+        env:
+          TARGETS_JSON: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+
+          targets = json.loads(os.environ["TARGETS_JSON"])
+          if not isinstance(targets, list) or not targets:
+              raise SystemExit("targets must be a non-empty JSON array")
+
+          allowed = {
+              "linux/amd64":   {"goos": "linux",   "goarch": "amd64", "goarm": "",  "label": "linux-amd64",   "ext": "",     "archive": "tar.gz"},
+              "linux/arm64":   {"goos": "linux",   "goarch": "arm64", "goarm": "",  "label": "linux-arm64",   "ext": "",     "archive": "tar.gz"},
+              "linux/arm/v7":  {"goos": "linux",   "goarch": "arm",   "goarm": "7", "label": "linux-armv7",   "ext": "",     "archive": "tar.gz"},
+              "darwin/amd64":  {"goos": "darwin",  "goarch": "amd64", "goarm": "",  "label": "darwin-amd64",  "ext": "",     "archive": "tar.gz"},
+              "darwin/arm64":  {"goos": "darwin",  "goarch": "arm64", "goarm": "",  "label": "darwin-arm64",  "ext": "",     "archive": "tar.gz"},
+              "windows/amd64": {"goos": "windows", "goarch": "amd64", "goarm": "",  "label": "windows-amd64", "ext": ".exe", "archive": "zip"},
+              "windows/arm64": {"goos": "windows", "goarch": "arm64", "goarm": "",  "label": "windows-arm64", "ext": ".exe", "archive": "zip"},
+          }
+
+          include = []
+          for t in targets:
+              if t not in allowed:
+                  raise SystemExit(f"unsupported target: {t}")
+              include.append(allowed[t])
+
+          print("matrix=" + json.dumps({"include": include}, separators=(",", ":")))
+          PY
+
+  # ---------------------------------------------------------------------------
+  # Build: compile the binary for each OS/arch target in parallel.
+  # ---------------------------------------------------------------------------
+  build-binary:
+    name: Build (${{ matrix.label }})
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-release.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Download dependencies
+        shell: bash
+        run: go mod download
+
+      - name: Build binary
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          COMMIT: ${{ github.sha }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: ${{ inputs.cgo-enabled && '1' || '0' }}
+          BINARY_NAME: ${{ inputs.binary-name }}
+          MAIN_PATH: ${{ inputs.main-path }}
+          BINARY_EXT: ${{ matrix.ext }}
+          TARGET_LABEL: ${{ matrix.label }}
+          ARCHIVE_KIND: ${{ matrix.archive }}
+          LDFLAGS_TEMPLATE: ${{ inputs.ldflags }}
+        run: |
+          set -euo pipefail
+
+          export BUILD_DATE
+          BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          mkdir -p build dist
+
+          out_name="${BINARY_NAME}-${VERSION}-${TARGET_LABEL}${BINARY_EXT}"
+          out_path="build/${out_name}"
+
+          if [ -n "${GOARM}" ]; then
+            export GOARM
+          fi
+
+          if [ -n "$LDFLAGS_TEMPLATE" ]; then
+            ldflags="$(echo "$LDFLAGS_TEMPLATE" | envsubst '$VERSION $TAG $COMMIT $BUILD_DATE')"
+            go build -trimpath -ldflags "$ldflags" -o "${out_path}" "${MAIN_PATH}"
+          else
+            go build -trimpath -o "${out_path}" "${MAIN_PATH}"
+          fi
+
+          if [ "${ARCHIVE_KIND}" = "zip" ]; then
+            archive="dist/${BINARY_NAME}-${VERSION}-${TARGET_LABEL}.zip"
+            ( cd build && zip -q "../${archive}" "${out_name}" )
+          else
+            archive="dist/${BINARY_NAME}-${VERSION}-${TARGET_LABEL}.tar.gz"
+            tar -C build -czf "${archive}" "${out_name}"
+          fi
+
+          echo "Created ${archive}"
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ inputs.binary-name }}-${{ matrix.label }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Release: create/update the GitHub Release and upload all assets.
+  # ---------------------------------------------------------------------------
+  release-binary:
+    name: Release
+    needs:
+      - prepare-release
+      - build-binary
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        env:
+          PREV_TAG: ${{ needs.prepare-release.outputs.previous_tag }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          MODE: ${{ needs.prepare-release.outputs.mode }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release-notes.md"
+          used_release_md="false"
+
+          if [ -f RELEASE.md ]; then
+            awk -v target="## ${TAG}" '
+              $0 == target { found=1; next }
+              found && /^---$/ { exit }
+              found { print }
+            ' RELEASE.md > "$out"
+
+            if [ -s "$out" ]; then
+              used_release_md="true"
+            fi
+          fi
+
+          if [ "$used_release_md" = "false" ]; then
+            if [ "$MODE" = "existing" ]; then
+              {
+                echo "## Rebuilt binary assets for ${TAG}"
+                echo
+                echo "Binary release assets rebuilt and uploaded for ${TAG}."
+              } > "$out"
+            else
+              {
+                echo "## Changes since ${PREV_TAG}"
+                echo
+                if [ "$PREV_TAG" = "v0.0.0" ]; then
+                  git log --pretty=format:"- %s (%h)"
+                else
+                  git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)"
+                fi
+              } > "$out"
+            fi
+          fi
+
+          echo "file=$out"                       >> "$GITHUB_OUTPUT"
+          echo "used_release_md=$used_release_md" >> "$GITHUB_OUTPUT"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Generate SHA-256 checksums
+        id: checksums
+        shell: bash
+        env:
+          BINARY_NAME: ${{ inputs.binary-name }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          checksums="$RUNNER_TEMP/${BINARY_NAME}-${VERSION}-checksums.txt"
+
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort | while read -r file; do
+            ( cd "$(dirname "$file")" && sha256sum "$(basename "$file")" )
+          done > "$checksums"
+
+          echo "Generated checksums:"
+          cat "$checksums"
+          echo "file=$checksums" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push annotated tag
+        if: inputs.bump != 'none'
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" "$SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Update moving major tag
+        if: inputs.bump != 'none' && inputs.update-major-tag
+        shell: bash
+        env:
+          MAJOR_TAG: ${{ needs.prepare-release.outputs.major_tag }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git tag -fa "$MAJOR_TAG" -m "Update $MAJOR_TAG to $TAG" "$SHA"
+          git push origin "refs/tags/$MAJOR_TAG" --force
+
+      - name: Check whether release already exists
+        id: release_exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        if: steps.release_exists.outputs.exists == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          PREFIX: ${{ inputs.release-name-prefix }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREFIX" ]; then
+            title="${PREFIX} ${TAG}"
+          else
+            title="${TAG}"
+          fi
+
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$title" \
+            --notes-file "$NOTES_FILE" \
+            --target "$SHA"
+
+      - name: Update release notes (existing release)
+        if: steps.release_exists.outputs.exists == 'true' && inputs.bump == 'none'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          PREFIX: ${{ inputs.release-name-prefix }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREFIX" ]; then
+            title="${PREFIX} ${TAG}"
+          else
+            title="${TAG}"
+          fi
+
+          gh release edit "$TAG" \
+            --title "$title" \
+            --notes-file "$NOTES_FILE"
+
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          CLOBBER: ${{ inputs.replace-release-assets }}
+          CHECKSUMS_FILE: ${{ steps.checksums.outputs.file }}
+        run: |
+          set -euo pipefail
+
+          clobber_flag=""
+          if [ "$CLOBBER" = "true" ]; then
+            clobber_flag="--clobber"
+          fi
+
+          while IFS= read -r -d '' file; do
+            gh release upload "$TAG" "$file" $clobber_flag
+          done < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0)
+
+          gh release upload "$TAG" "$CHECKSUMS_FILE" $clobber_flag
+
+      - name: Release summary
+        shell: bash
+        env:
+          BINARY_NAME: ${{ inputs.binary-name }}
+          MAIN_PATH: ${{ inputs.main-path }}
+          BUMP: ${{ inputs.bump }}
+          MODE: ${{ needs.prepare-release.outputs.mode }}
+          PREV_TAG: ${{ needs.prepare-release.outputs.previous_tag }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          MAJOR_TAG_UPDATED: ${{ inputs.update-major-tag }}
+          USED_RELEASE_MD: ${{ steps.notes.outputs.used_release_md }}
+          RELEASE_EXISTED: ${{ steps.release_exists.outputs.exists }}
+        run: |
+          {
+            echo "## Release Summary"
+            echo
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| Repository | \`${{ github.repository }}\` |"
+            echo "| Binary | $BINARY_NAME |"
+            echo "| Main path | \`$MAIN_PATH\` |"
+            echo "| Bump | $BUMP |"
+            echo "| Mode | $MODE |"
+            echo "| Previous tag | $PREV_TAG |"
+            echo "| Version | $VERSION |"
+            echo "| Tag | $TAG |"
+            echo "| Major tag updated | $MAJOR_TAG_UPDATED |"
+            echo "| Notes from RELEASE.md | $USED_RELEASE_MD |"
+            echo "| Release existed | $RELEASE_EXISTED |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,35 +1,76 @@
-name: Go CI Reusable
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Go CI — Reusable Workflow
+#
+# Lint, static analysis, coverage, and multi-version test matrix for Go
+# projects. Designed for use across the otfabric GitHub organisation.
+#
+# Jobs:
+#   lint-and-coverage  — golangci-lint, go vet, and tests with coverage using
+#                        the Go version from go.mod (floor: 1.23).
+#   test-matrix        — Tests + race detector on each version in go-versions.
+#
+# Caller example:
+#
+#   jobs:
+#     ci:
+#       uses: otfabric/.github/.github/workflows/go-ci.yml@main
+#       with:
+#         go-versions: '["1.24","1.25","1.26"]'
+#         codecov-name: my-project
+#       secrets:
+#         OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+
+name: Go CI
 
 on:
   workflow_call:
     inputs:
       go-versions:
+        description: >-
+          JSON array of Go versions for the test matrix.
+          The lint/coverage job always uses the version from go.mod
+          (minimum 1.23 for golangci-lint v2 compatibility).
         required: false
         type: string
-        default: '["1.21","1.22","1.23","1.24","1.25","1.26"]'
+        default: '["1.23","1.24","1.25","1.26"]'
       codecov-name:
+        description: >-
+          Codecov flag / upload name. Leave empty to skip the Codecov upload
+          even when run-codecov is true.
         required: false
         type: string
         default: ""
       test-exclude-regex:
+        description: >-
+          Extended regex passed to grep -Ev to exclude packages from testing.
+          Matched against the output of go list ./... .
         required: false
         type: string
         default: "(/examples($|/)|/cmd($|/))"
       timeout-minutes:
+        description: "Job-level timeout in minutes (applies to every job)."
         required: false
         type: number
         default: 15
       run-codecov:
+        description: "Upload coverage to Codecov (also requires a non-empty codecov-name)."
         required: false
         type: boolean
         default: true
+      golangci-lint-version:
+        description: "golangci-lint version to install (e.g. v2.1.6)."
+        required: false
+        type: string
+        default: "v2.1.6"
     secrets:
       OTFABRIC_READ_TOKEN:
+        description: "PAT with read access to private github.com/otfabric/* modules."
         required: true
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write # Codecov OIDC token exchange
 
 env:
   GOPRIVATE: github.com/otfabric/*
@@ -40,7 +81,7 @@ concurrency:
 
 jobs:
   lint-and-coverage:
-    name: Lint and Coverage (go.mod)
+    name: Lint & Coverage
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
@@ -48,7 +89,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Resolve lint Go version
+      - name: Resolve Go version for linting
         id: goversion
         shell: bash
         run: |
@@ -59,12 +100,12 @@ jobs:
           )
 
           if [ -z "$mod_go" ]; then
-            echo "Failed to determine Go version from go.mod" >&2
+            echo "::error::Could not determine Go version from go.mod"
             exit 1
           fi
 
+          # golangci-lint v2 requires Go >= 1.23
           min_lint_go="1.23"
-
           lowest="$(printf '%s\n%s\n' "$mod_go" "$min_lint_go" | sort -V | head -n1)"
           if [ "$lowest" = "$mod_go" ]; then
             lint_go="$min_lint_go"
@@ -72,13 +113,10 @@ jobs:
             lint_go="$mod_go"
           fi
 
-          echo "go_mod=$mod_go" >> "$GITHUB_OUTPUT"
+          echo "go_mod=$mod_go"   >> "$GITHUB_OUTPUT"
           echo "lint_go=$lint_go" >> "$GITHUB_OUTPUT"
 
-          echo "go.mod version: $mod_go"
-          echo "lint Go version: $lint_go"
-
-      - name: Set up Go for lint/coverage
+      - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.goversion.outputs.lint_go }}
@@ -87,49 +125,64 @@ jobs:
             go.sum
             **/go.sum
 
-      - name: Auth for private otfabric modules
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
         run: |
-          git config --global url."https://x-access-token:${{ secrets.OTFABRIC_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      - name: Verify module files
+      - name: Verify module tidiness
+        shell: bash
         run: |
           go mod tidy
           git diff --exit-code
 
       - name: Download dependencies
+        shell: bash
         run: go mod download
 
       - name: Verify dependencies
+        shell: bash
         run: go mod verify
 
       - name: go vet
+        shell: bash
         run: go vet ./...
 
-      - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
-
       - name: golangci-lint
-        run: golangci-lint run --timeout=5m
+        shell: bash
+        env:
+          LINT_VERSION: ${{ inputs.golangci-lint-version }}
+        run: |
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${LINT_VERSION}"
+          golangci-lint run --timeout=5m
 
       - name: Resolve test packages
         id: pkgs
         shell: bash
+        env:
+          EXCLUDE_REGEX: ${{ inputs.test-exclude-regex }}
         run: |
           set -euo pipefail
-          mapfile -t pkgs < <(go list ./... | grep -Ev '${{ inputs.test-exclude-regex }}' || true)
+          mapfile -t pkgs < <(go list ./... | grep -Ev "${EXCLUDE_REGEX}" || true)
           if [ "${#pkgs[@]}" -eq 0 ]; then
-            echo "No test packages found after filtering" >&2
+            echo "::error::No test packages found after exclusion filter"
             exit 1
           fi
           printf 'list=%s\n' "${pkgs[*]}" >> "$GITHUB_OUTPUT"
 
-      - name: Coverage
+      - name: Run tests with coverage
+        shell: bash
         run: |
-          go test -count=1 -timeout=120s -coverprofile=coverage.out -covermode=set ${{ steps.pkgs.outputs.list }}
+          go test -count=1 -timeout=120s \
+            -coverprofile=coverage.out -covermode=set \
+            ${{ steps.pkgs.outputs.list }}
           go tool cover -func=coverage.out | tee coverage.txt
           go tool cover -html=coverage.out -o coverage.html
 
-      - name: Add coverage summary
+      - name: Coverage summary
+        shell: bash
         run: |
           {
             echo "## Coverage Report"
@@ -148,7 +201,7 @@ jobs:
             coverage.txt
             coverage.html
 
-      - name: Upload coverage to Codecov
+      - name: Upload to Codecov
         if: inputs.run-codecov && inputs.codecov-name != ''
         uses: codecov/codecov-action@v5
         with:
@@ -159,8 +212,13 @@ jobs:
           fail_ci_if_error: false
           verbose: true
 
+  # ---------------------------------------------------------------------------
+  # Test matrix — validates compilation and test-suite on each Go version.
+  # Lint, vet, and module verification run once in lint-and-coverage; this job
+  # focuses purely on build + test correctness across versions.
+  # ---------------------------------------------------------------------------
   test-matrix:
-    name: Test Matrix (Go ${{ matrix.go-version }})
+    name: Test (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     strategy:
@@ -181,38 +239,35 @@ jobs:
             go.sum
             **/go.sum
 
-      - name: Auth for private otfabric modules
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
         run: |
-          git config --global url."https://x-access-token:${{ secrets.OTFABRIC_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
-      - name: Verify module files
-        run: |
-          go mod tidy
-          git diff --exit-code
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Download dependencies
+        shell: bash
         run: go mod download
-
-      - name: Verify dependencies
-        run: go mod verify
-
-      - name: go vet
-        run: go vet ./...
 
       - name: Resolve test packages
         id: pkgs
         shell: bash
+        env:
+          EXCLUDE_REGEX: ${{ inputs.test-exclude-regex }}
         run: |
           set -euo pipefail
-          mapfile -t pkgs < <(go list ./... | grep -Ev '${{ inputs.test-exclude-regex }}' || true)
+          mapfile -t pkgs < <(go list ./... | grep -Ev "${EXCLUDE_REGEX}" || true)
           if [ "${#pkgs[@]}" -eq 0 ]; then
-            echo "No test packages found after filtering" >&2
+            echo "::error::No test packages found after exclusion filter"
             exit 1
           fi
           printf 'list=%s\n' "${pkgs[*]}" >> "$GITHUB_OUTPUT"
 
       - name: Test
+        shell: bash
         run: go test -count=1 -timeout=120s ${{ steps.pkgs.outputs.list }}
 
       - name: Race test
+        shell: bash
         run: go test -count=1 -timeout=120s -race ${{ steps.pkgs.outputs.list }}

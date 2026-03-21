@@ -1,0 +1,338 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Go Package Release — Reusable Workflow
+#
+# Creates a semver-tagged release for a Go module (library / package).
+# Validates module integrity and runs tests (including race detector) before
+# tagging. Optionally reads hand-written release notes from a RELEASE.md file.
+#
+# RELEASE.md format (optional):
+#
+#   ## v1.2.0
+#   - Added feature X
+#   - Fixed bug Y
+#   ---
+#   ## v1.1.0
+#   ...
+#
+# When a matching section is found for the new tag, its content is used as the
+# GitHub release body. Otherwise, a commit-log changelog is generated.
+#
+# Caller example:
+#
+#   jobs:
+#     release:
+#       uses: otfabric/.github/.github/workflows/go-package-release.yml@main
+#       with:
+#         bump: minor
+#       secrets:
+#         OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+
+name: Go Package Release
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: "Semver bump strategy: patch | minor | major."
+        required: true
+        type: string
+      release-name-prefix:
+        description: >-
+          Optional prefix for the GitHub release title.
+          When set, the title becomes "<prefix> <tag>" (e.g. "MyLib v1.2.0").
+        required: false
+        type: string
+        default: ""
+      test-exclude-regex:
+        description: >-
+          Extended regex passed to grep -Ev to exclude packages from testing.
+          Matched against the output of go list ./... .
+        required: false
+        type: string
+        default: "(/examples($|/)|/cmd($|/))"
+      timeout-minutes:
+        description: "Job-level timeout in minutes."
+        required: false
+        type: number
+        default: 20
+      run-vet:
+        description: "Run go vet before testing."
+        required: false
+        type: boolean
+        default: true
+      update-major-tag:
+        description: >-
+          Maintain a moving major-version tag (e.g. v1) pointing at the latest
+          release within that major. Useful for GitHub Actions; generally not
+          needed for Go libraries.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: "Released version without v prefix (e.g. 1.2.3)."
+        value: ${{ jobs.release-package.outputs.version }}
+      tag:
+        description: "Git tag created (e.g. v1.2.3)."
+        value: ${{ jobs.release-package.outputs.tag }}
+      previous-tag:
+        description: "Previous semver tag before this release (e.g. v1.2.2)."
+        value: ${{ jobs.release-package.outputs.previous_tag }}
+    secrets:
+      OTFABRIC_READ_TOKEN:
+        description: "PAT with read access to private github.com/otfabric/* modules."
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  GOPRIVATE: github.com/otfabric/*
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-package:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CURRENT_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$CURRENT_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::Releases are only allowed from the default branch ($DEFAULT_BRANCH). Current: $CURRENT_REF."
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Verify module tidiness
+        shell: bash
+        run: |
+          go mod tidy
+          git diff --exit-code
+
+      - name: Download dependencies
+        shell: bash
+        run: go mod download
+
+      - name: Verify dependencies
+        shell: bash
+        run: go mod verify
+
+      - name: go vet
+        if: inputs.run-vet
+        shell: bash
+        run: go vet ./...
+
+      - name: Resolve test packages
+        id: pkgs
+        shell: bash
+        env:
+          EXCLUDE_REGEX: ${{ inputs.test-exclude-regex }}
+        run: |
+          set -euo pipefail
+          mapfile -t pkgs < <(go list ./... | grep -Ev "${EXCLUDE_REGEX}" || true)
+          if [ "${#pkgs[@]}" -eq 0 ]; then
+            echo "::error::No test packages found after exclusion filter"
+            exit 1
+          fi
+          printf 'list=%s\n' "${pkgs[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        shell: bash
+        run: go test -count=1 -timeout=120s ${{ steps.pkgs.outputs.list }}
+
+      - name: Race test
+        shell: bash
+        run: go test -count=1 -timeout=120s -race ${{ steps.pkgs.outputs.list }}
+
+      - name: Determine next version
+        id: version
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          case "$BUMP" in
+            patch|minor|major) ;;
+            *)
+              echo "::error::Invalid bump strategy: $BUMP (expected patch, minor, or major)"
+              exit 1
+              ;;
+          esac
+
+          previous_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)"
+          if [ -z "$previous_tag" ]; then
+            previous_tag="v0.0.0"
+          fi
+
+          previous_version="${previous_tag#v}"
+          IFS='.' read -r major minor patch <<< "$previous_version"
+
+          case "$BUMP" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+
+          version="${major}.${minor}.${patch}"
+          tag="v${version}"
+          major_tag="v${major}"
+
+          echo "previous_tag=$previous_tag"       >> "$GITHUB_OUTPUT"
+          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "version=$version"                 >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"                         >> "$GITHUB_OUTPUT"
+          echo "major_tag=$major_tag"             >> "$GITHUB_OUTPUT"
+
+      - name: Fail if tag already exists
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists. Tags are immutable; choose a different bump."
+            exit 1
+          fi
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        env:
+          PREV_TAG: ${{ steps.version.outputs.previous_tag }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release-notes.md"
+          used_release_md="false"
+
+          if [ -f RELEASE.md ]; then
+            awk -v target="## ${TAG}" '
+              $0 == target { found=1; next }
+              found && /^---$/ { exit }
+              found { print }
+            ' RELEASE.md > "$out"
+
+            if [ -s "$out" ]; then
+              used_release_md="true"
+            fi
+          fi
+
+          if [ "$used_release_md" = "false" ]; then
+            {
+              echo "## Changes since ${PREV_TAG}"
+              echo
+              if [ "$PREV_TAG" = "v0.0.0" ]; then
+                git log --pretty=format:"- %s (%h)"
+              else
+                git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)"
+              fi
+            } > "$out"
+          fi
+
+          echo "file=$out"                       >> "$GITHUB_OUTPUT"
+          echo "used_release_md=$used_release_md" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push annotated tag
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" "$SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Update moving major tag
+        if: inputs.update-major-tag
+        shell: bash
+        env:
+          MAJOR_TAG: ${{ steps.version.outputs.major_tag }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git tag -fa "$MAJOR_TAG" -m "Update $MAJOR_TAG to $TAG" "$SHA"
+          git push origin "refs/tags/$MAJOR_TAG" --force
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PREFIX: ${{ inputs.release-name-prefix }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREFIX" ]; then
+            title="${PREFIX} ${TAG}"
+          else
+            title="${TAG}"
+          fi
+
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$title" \
+            --notes-file "$NOTES_FILE" \
+            --target "$SHA"
+
+      - name: Release summary
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+          PREV_TAG: ${{ steps.version.outputs.previous_tag }}
+          TAG: ${{ steps.version.outputs.tag }}
+          MAJOR_TAG_UPDATED: ${{ inputs.update-major-tag }}
+          USED_RELEASE_MD: ${{ steps.notes.outputs.used_release_md }}
+        run: |
+          {
+            echo "## Release Summary"
+            echo
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| Repository | \`${{ github.repository }}\` |"
+            echo "| Bump | $BUMP |"
+            echo "| Previous tag | $PREV_TAG |"
+            echo "| New tag | $TAG |"
+            echo "| Major tag updated | $MAJOR_TAG_UPDATED |"
+            echo "| Notes from RELEASE.md | $USED_RELEASE_MD |"
+          } >> "$GITHUB_STEP_SUMMARY"
