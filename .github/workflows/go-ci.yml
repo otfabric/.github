@@ -47,7 +47,7 @@ on:
           Matched against the output of go list ./... .
         required: false
         type: string
-        default: "(/examples($|/)|/cmd($|/))"
+        default: "(/example(s)?($|/)|/cmd($|/))"
       timeout-minutes:
         description: "Job-level timeout in minutes (applies to every job)."
         required: false
@@ -87,7 +87,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Resolve Go version for linting
         id: goversion
@@ -203,7 +203,7 @@ jobs:
 
       - name: Upload to Codecov
         if: inputs.run-codecov && inputs.codecov-name != ''
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           use_oidc: true
           files: coverage.out
@@ -228,7 +228,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
