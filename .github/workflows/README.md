@@ -147,7 +147,13 @@ Each workflow's inputs are fully documented with descriptions inside the YAML fi
 | `go-versions` | `["1.23","1.24","1.25","1.26"]` | Go versions for the test matrix |
 | `golangci-lint-version` | `v2.1.6` | Pinned linter version |
 | `test-exclude-regex` | `(/examples($\|/)\|/cmd($\|/))` | Packages to skip during testing |
+| `coverpkg` | `""` | Optional `-coverpkg` list for merged cross-package coverage (Codecov) |
 | `codecov-name` | `""` | Set to enable Codecov upload |
+
+When a repo measures coverage with `go test -coverpkg=...` locally (for example a
+`make coverage` target that merges library packages exercised by conformance
+tests), pass the same package list as `coverpkg` so Codecov matches that gate.
+Leave `coverpkg` empty to keep the default per-package coverage behaviour.
 
 ### go-package-release.yml
 

@@ -18,6 +18,9 @@
 #       with:
 #         go-versions: '["1.24","1.25","1.26"]'
 #         codecov-name: my-project
+#         # Optional: attribute coverage across packages (matches local
+#         # `go test -coverpkg=...` / make coverage gates).
+#         coverpkg: github.com/otfabric/my-lib,github.com/otfabric/my-lib/pkg
 #       secrets:
 #         OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 
@@ -48,6 +51,16 @@ on:
         required: false
         type: string
         default: "(/example(s)?($|/)|/cmd($|/))"
+      coverpkg:
+        description: >-
+          Optional comma-separated package list passed to go test -coverpkg
+          during the lint-and-coverage job. When set, coverage is attributed
+          across those packages (including hits from tests in other packages
+          such as conformance suites). Leave empty for default per-package
+          coverage of the tested packages only.
+        required: false
+        type: string
+        default: ""
       timeout-minutes:
         description: "Job-level timeout in minutes (applies to every job)."
         required: false
@@ -174,9 +187,19 @@ jobs:
 
       - name: Run tests with coverage
         shell: bash
+        env:
+          COVERPKG: ${{ inputs.coverpkg }}
         run: |
+          set -euo pipefail
+          cover_args=()
+          if [ -n "${COVERPKG}" ]; then
+            cover_args+=(-coverpkg="${COVERPKG}")
+            echo "Using -coverpkg=${COVERPKG}"
+          fi
+          # shellcheck disable=SC2086 # intentional: package list is space-separated
           go test -count=1 -timeout=120s \
             -coverprofile=coverage.out -covermode=set \
+            "${cover_args[@]}" \
             ${{ steps.pkgs.outputs.list }}
           go tool cover -func=coverage.out | tee coverage.txt
           go tool cover -html=coverage.out -o coverage.html
