@@ -1,178 +1,68 @@
 # OT Fabric
 
-**Unified Data for Industrial Operations**
+**Unified data for industrial operations.**
 
-OT Fabric is an organization focused on **breaking OT data silos** and making industrial data **discoverable, accessible, and usable** across systems, sites, and teams.
+Built by people and AI agents together, OT Fabric creates open-source protocol libraries and tools that break down OT data silos, so industrial data is easy to discover, access and use across systems, sites and teams.
 
-Industrial environments are full of valuable data, but that data is often trapped behind protocol complexity, vendor boundaries, isolated networks, custom integrations, and inconsistent asset models. OT Fabric exists to bridge that gap.
+## Why
 
-Our goal is to help industrial operators, engineers, integrators, and data teams move from fragmented device access to a more open, structured, and reusable data foundation.
+Industrial data is valuable, but it is locked inside PLCs, RTUs, meters, inverters and building controllers. Every device speaks its own protocol, documentation is often incomplete, and integrations are rebuilt from scratch for every site and vendor. Teams spend their time fighting connectivity instead of using the data.
 
----
+At the same time, the opportunity has never been bigger. Interconnecting devices unlocks better operations in factories, buildings and infrastructure. Energy is one of the clearest examples: a sustainable, decentralized grid only works when solar inverters, batteries, meters and substations can exchange data reliably.
 
-## What we do
+We think the foundation for industrial connectivity should be open, well tested and reusable, so that nobody has to solve the same protocol problem twice.
 
-OT Fabric builds tools, libraries, and platform components for:
+## What we build
 
-- **OT protocol discovery**
-- **device and endpoint identification**
-- **industrial asset onboarding**
-- **data collection and normalization**
-- **mapping OT data into modern systems**
-- **reducing integration effort across sites and vendors**
+**Protocol libraries.** Pure Go clients and servers, built for production use:
 
-We focus on practical industrial realities:
-- heterogeneous devices
-- legacy protocols
-- private networks
-- imperfect documentation
-- inconsistent data models
-- the need for safe, observable, repeatable data access
+| Protocol | Library | CLI |
+|---|---|---|
+| OPC UA | [go-opcua](https://github.com/otfabric/go-opcua) | [opcuactl](https://github.com/otfabric/opcuactl) |
+| Modbus TCP/RTU | [go-modbus](https://github.com/otfabric/go-modbus) | [modbusctl](https://github.com/otfabric/modbusctl), [modbus-simulator](https://github.com/otfabric/modbus-simulator) |
+| IEC 60870-5-104 | [go-iec104](https://github.com/otfabric/go-iec104) | [iec104ctl](https://github.com/otfabric/iec104ctl) |
+| IEC 61850 / MMS | [go-iec61850](https://github.com/otfabric/go-iec61850), [go-mms](https://github.com/otfabric/go-mms) | [iec61850ctl](https://github.com/otfabric/iec61850ctl) |
+| BACnet/IP | [go-bacnet](https://github.com/otfabric/go-bacnet) | [bacnetctl](https://github.com/otfabric/bacnetctl) |
+| Siemens S7 | [go-s7comm](https://github.com/otfabric/go-s7comm) | [s7commctl](https://github.com/otfabric/s7commctl) |
+| SunSpec | [go-sunspec](https://github.com/otfabric/go-sunspec) | included |
 
----
+**Transport building blocks.** [go-cotp](https://github.com/otfabric/go-cotp), [go-tpkt](https://github.com/otfabric/go-tpkt) and [go-serial](https://github.com/otfabric/go-serial) for ISO-on-TCP and RS-232/RS-485 links.
 
-## Why OT Fabric
+**Discovery.** [go-otfp](https://github.com/otfabric/go-otfp) fingerprints OT protocols so you can see what is actually running on a network.
 
-Operational Technology environments often suffer from the same core problems:
+**Interoperability testing.** Dockerized and fixture-based suites run our implementations against other stacks: [opcua-interop](https://github.com/otfabric/opcua-interop), [modbus-interop](https://github.com/otfabric/modbus-interop), [iec104-interop](https://github.com/otfabric/iec104-interop), [bacnet-interop](https://github.com/otfabric/bacnet-interop), [mms-interop](https://github.com/otfabric/mms-interop) and [snap7-interop](https://github.com/otfabric/snap7-interop).
 
-- data is locked inside devices and gateways
-- each protocol requires specialized knowledge
-- onboarding assets is slow and manual
-- integrations are fragile and vendor-specific
-- collected data is hard to standardize and reuse
-- engineering teams repeatedly solve the same connectivity and mapping problems
+## How we build
 
-OT Fabric aims to provide a common foundation so industrial data can flow more easily into monitoring, analytics, control-adjacent systems, and engineering workflows.
+OT Fabric is built by people and AI agents working together. We are heading toward a reality where LLMs write better code and deliver more secure software, and we build for that reality today. Engineers bring the domain knowledge of real OT systems, set direction and own every decision. Agents bring speed, breadth and tireless attention to detail. Each makes the other better.
 
----
-
-## Our mission
-
-Our mission is to create an open and practical foundation for **industrial data connectivity**.
-
-That means:
-
-- making OT assets easier to discover
-- making protocols easier to work with
-- making data collection easier to deploy
-- making industrial data easier to model and consume
-- making disconnected systems easier to connect
-
-In short:  
-**from isolated devices to connected industrial data ecosystems**
-
----
-
-## Areas of focus
-
-### Protocol discovery and connectivity
-We build tooling to detect, probe, fingerprint, and communicate with industrial endpoints across common OT protocols.
-
-### Asset onboarding
-We aim to make it easier to turn discovered devices into structured inventory with meaningful metadata, capabilities, and reusable data mappings.
-
-### Data collection
-We work on reliable collection patterns for extracting data from industrial devices and making that data available to downstream systems.
-
-### Data normalization
-Raw OT data is not enough. We care about creating structures that make industrial data understandable, comparable, and reusable.
-
-### Open tooling
-We believe the OT ecosystem benefits from practical open tools that reduce friction for developers, integrators, and operators.
-
----
-
-## What “Fabric” means
-
-The name **OT Fabric** reflects our core idea:
-
-A fabric connects many separate parts into something stronger and more useful as a whole.
-
-In the same way, OT Fabric connects:
-
-- devices
-- protocols
-- sites
-- data pipelines
-- engineering systems
-- analytics platforms
-- operational workflows
-
-The result is a more connected and usable industrial data landscape.
-
----
-
-## Who this is for
-
-OT Fabric is relevant for:
-
-- industrial operators
-- system integrators
-- OT engineers
-- automation engineers
-- SCADA / PLC / edge solution builders
-- data engineers working with industrial sources
-- software teams building OT-aware platforms
-- organizations trying to modernize industrial data access
-
----
+Speed alone is not the goal. Industrial protocols leave no room for "mostly works," so everything we ship, whoever or whatever wrote it, is held to the same bar: public code, public tests and interoperability suites that check it against other implementations. Our repositories are written to be easy for agents to work in, and for people to review, so contributors can bring their own agents too.
 
 ## Principles
 
-We care about building systems that are:
+- **Practical.** Built for real OT networks: legacy devices, private networks and imperfect documentation.
+- **Open, MIT first.** Public code and public tests under the MIT license by default, so anyone can use, inspect and build on how a device is being talked to.
+- **Modular.** Use one library, one CLI or the whole stack.
+- **Proven.** If it ships, it interoperates. That is why every protocol gets a test suite.
+- **Observable.** Diagnostics and visibility are built in from the start.
+- **People and agents.** Built by engineers and AI agents together, and structured so both can understand, extend and test the code.
 
-- **practical** — grounded in real OT environments
-- **open** — designed for interoperability
-- **modular** — useful as libraries, tools, or platform components
-- **observable** — designed with visibility and diagnostics in mind
-- **repeatable** — deployable across sites and projects
-- **extensible** — ready to support more protocols, models, and workflows over time
+## Where we're heading
 
----
+The protocol layer is the foundation. From there, we're building toward:
 
-## Current direction
+- **Full coverage of all relevant OT protocols**, so any industrial device can be reached with the same open, tested toolkit.
+- **IT2OT gateways and data connectors** that move OT data safely into the IT, cloud and analytics systems that need it.
+- **OT MCP servers for agentic interaction**, giving AI agents a structured, safe way to discover, read and work with industrial devices.
 
-OT Fabric is evolving toward a broader ecosystem of:
+## Who it's for
 
-- protocol-aware tooling
-- discovery and scanning components
-- inventory and onboarding services
-- data collection pipelines
-- reusable libraries for industrial connectivity
-- platform building blocks for OT data integration
-
----
-
-## Vision
-
-We believe industrial data should not remain trapped in disconnected silos.
-
-The long-term vision of OT Fabric is to help create a world where:
-
-- OT assets are easier to discover
-- industrial data is easier to understand
-- site onboarding is faster
-- integrations are less fragile
-- data can move more freely into engineering and analytics workflows
-- teams spend less time fighting connectivity and more time creating value
-
----
-
-## Featured repositories
-
-Explore our repositories to see the building blocks behind this mission.
-
-Core themes include:
-- OT protocol tooling
-- discovery and scanning
-- data ingestion and transport
-- backend services
-- developer-focused industrial libraries
-
----
+- **Energy and electricity startups** moving the needle on sustainability: building the software that connects solar, storage, EV charging, grid and DER equipment in an increasingly connected world.
+- **OT and automation engineers** who commission, troubleshoot and maintain field devices.
+- **System integrators** who connect equipment from many vendors across many sites.
+- **SCADA and edge builders** who need dependable protocol stacks.
+- **Data and software teams** who need reliable access to industrial devices.
 
 ## Get involved
 
-If you are working on industrial connectivity, OT data collection, protocol tooling, or asset discovery, we’d love to connect.
-
-OT Fabric is about building a stronger foundation for industrial data — one that is open, reusable, and designed for the real world.
+Everything is MIT-licensed unless a repository says otherwise. Try a CLI, open an issue, or contribute a fix, written by you, your AI agent or both of you. If you work on industrial connectivity, we'd love to hear from you at [otfabric.io](https://otfabric.io).
