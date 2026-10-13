@@ -24,7 +24,7 @@ We think the foundation for industrial connectivity should be open, well tested 
 | IEC 61850 / MMS | [go-iec61850](https://github.com/otfabric/go-iec61850), [go-mms](https://github.com/otfabric/go-mms) | [iec61850ctl](https://github.com/otfabric/iec61850ctl) |
 | BACnet/IP | [go-bacnet](https://github.com/otfabric/go-bacnet) | [bacnetctl](https://github.com/otfabric/bacnetctl) |
 | Siemens S7 | [go-s7comm](https://github.com/otfabric/go-s7comm) | [s7commctl](https://github.com/otfabric/s7commctl) |
-| SunSpec | [go-sunspec](https://github.com/otfabric/go-sunspec) | included |
+| SunSpec | [go-sunspec](https://github.com/otfabric/go-sunspec) | [sunspecctl](https://github.com/otfabric/sunspecctl) |
 
 **Transport building blocks.** [go-cotp](https://github.com/otfabric/go-cotp), [go-tpkt](https://github.com/otfabric/go-tpkt) and [go-serial](https://github.com/otfabric/go-serial) for ISO-on-TCP and RS-232/RS-485 links.
 
