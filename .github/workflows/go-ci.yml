@@ -8,7 +8,7 @@
 # Jobs:
 #   lint-and-coverage  — golangci-lint, go vet, and tests with coverage using
 #                        the Go version from go.mod (floor: 1.23).
-#   test-matrix        — Tests + race detector on each version in go-versions.
+#   test-matrix        — Tests and, in a parallel job, the race detector on each version in go-versions.
 #
 # Caller example:
 #
@@ -240,14 +240,17 @@ jobs:
   # Lint, vet, and module verification run once in lint-and-coverage; this job
   # focuses purely on build + test correctness across versions.
   # ---------------------------------------------------------------------------
+  # The plain and the race-detector runs are separate jobs so they run in
+  # parallel (the race run takes about twice as long).
   test-matrix:
-    name: Test (Go ${{ matrix.go-version }})
+    name: ${{ matrix.race && 'Race' || 'Test' }} (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     strategy:
       fail-fast: false
       matrix:
         go-version: ${{ fromJSON(inputs.go-versions) }}
+        race: [false, true]
 
     steps:
       - name: Checkout
@@ -288,9 +291,11 @@ jobs:
           printf 'list=%s\n' "${pkgs[*]}" >> "$GITHUB_OUTPUT"
 
       - name: Test
+        if: ${{ !matrix.race }}
         shell: bash
         run: go test -count=1 -timeout=120s ${{ steps.pkgs.outputs.list }}
 
       - name: Race test
+        if: ${{ matrix.race }}
         shell: bash
         run: go test -count=1 -timeout=120s -race ${{ steps.pkgs.outputs.list }}
