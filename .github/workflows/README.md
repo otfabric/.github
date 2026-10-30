@@ -6,6 +6,8 @@ All repositories are private. Every workflow requires the `OTFABRIC_READ_TOKEN` 
 
 ## Workflows
 
+Reusable workflows share whole pipelines (the caller's job is `uses:` one of these). For building blocks that run as steps inside a repository's own jobs, see the composite actions in [`actions/`](../../actions/README.md).
+
 | Workflow | Purpose |
 |----------|---------|
 | [`go-ci.yml`](go-ci.yml) | Lint, static analysis, coverage, and multi-version test matrix |
@@ -192,22 +194,3 @@ Both release workflows expose outputs for downstream chaining:
 | `OTFABRIC_READ_TOKEN` | All workflows | PAT with read access to private `github.com/otfabric/*` modules |
 
 The workflows also use the automatic `GITHUB_TOKEN` for creating releases and uploading assets. No additional configuration is needed for that.
-
-## Upstream check actions (`*-interop` repositories)
-
-Composite actions under [`actions/`](../../actions) shared by the daily `Upstream` workflow
-(`.github/workflows/upstream.yml`) of every `*-interop` repository. Each compares the pins
-of the repository with the latest upstream and keeps one tracking issue,
-"Upstream releases: pins behind the latest", up to date.
-
-| Action | Purpose |
-|--------|---------|
-| `otfabric/.github/actions/upstream-images@main` | One row per base image pinned by digest (Dockerfiles, YAML): has its tag moved? |
-| `otfabric/.github/actions/upstream-row@main` | One row for a library / commit / tool pin (pin, latest, candidate test) |
-| `otfabric/.github/actions/upstream-candidate@main` | Builds and tests a candidate once per pin → latest pair (cached across daily runs) |
-| `otfabric/.github/actions/upstream-report@main` | Table in the Job Summary; opens / updates / comments on / closes the issue (`issues: write`) |
-
-A row is a JSON file `row-*.json` in an artifact named `upstream-row-*`:
-`component, kind, source, pinned, latest, status (current|behind|error), detail,
-test_outcome, test_result, test_cached, known`. A repository may also write rows itself
-(`actions/upstream-lib/upstream.py row ...`).
