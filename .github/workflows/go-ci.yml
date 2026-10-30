@@ -444,10 +444,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Go 1.26 has a fuzz coordinator race at the end of -fuzztime
+      # (go.dev/issue/75804), fixed in 1.27: fuzz on the current stable Go.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: ${{ inputs.module-dir }}/go.mod
+          go-version: stable
           cache-dependency-path: |
             go.sum
             **/go.sum
