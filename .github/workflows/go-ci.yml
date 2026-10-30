@@ -33,9 +33,10 @@ on:
     inputs:
       go-versions:
         description: >-
-          JSON array of Go versions for the test matrix.
-          The lint/coverage job always uses the version from go.mod
-          (minimum 1.23 for golangci-lint v2 compatibility).
+          JSON array of Go versions for the test matrix. Versions below the
+          go directive of go.mod are dropped, so the matrix starts at the
+          floor the module declares. The lint/coverage job always uses the
+          version from go.mod (minimum 1.23 for golangci-lint v2 compatibility).
         required: false
         type: string
         default: '["1.23","1.24","1.25","1.26"]'
@@ -52,7 +53,7 @@ on:
           Matched against the output of go list ./... .
         required: false
         type: string
-        default: "(/example(s)?($|/)|/cmd($|/))"
+        default: "/example(s)?($|/)"
       coverpkg:
         description: >-
           Optional comma-separated package list passed to go test -coverpkg
@@ -87,7 +88,7 @@ on:
         description: "Run govulncheck in its own job, on the current stable Go."
         required: false
         type: boolean
-        default: false
+        default: true
       govulncheck-version:
         description: "govulncheck version (v1.9.0 needs Go >= 1.26, which the stable job provides)."
         required: false
@@ -104,7 +105,7 @@ on:
         description: "go test -covermode for the coverage run: set, count or atomic."
         required: false
         type: string
-        default: "set"
+        default: "atomic"
       fuzz-time:
         description: >-
           Run every Fuzz target for this long, e.g. "10s", in a separate job.
@@ -299,8 +300,37 @@ jobs:
   # ---------------------------------------------------------------------------
   # The plain and the race-detector runs are separate jobs so they run in
   # parallel (the race run takes about twice as long).
+  matrix-versions:
+    name: Resolve Go versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      versions: ${{ steps.resolve.outputs.versions }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Drop versions below the go directive
+        id: resolve
+        shell: bash
+        working-directory: ${{ inputs.module-dir }}
+        env:
+          MATRIX: ${{ inputs.go-versions }}
+        run: |
+          set -euo pipefail
+          floor=$(sed -nE 's/^go ([0-9]+\.[0-9]+)(\.[0-9]+)?$/\1/p' go.mod | head -n1)
+          versions=$(jq -c --arg floor "$floor" '
+            def v: split(".") | map(tonumber);
+            map(select((v) >= ($floor | v)))
+          ' <<<"$MATRIX")
+          if [ "$versions" = "[]" ]; then
+            versions=$(jq -cn --arg floor "$floor" '[$floor]')
+          fi
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
   test-matrix:
     name: ${{ matrix.race && 'Race' || 'Test' }} (Go ${{ matrix.go-version }})
+    needs: matrix-versions
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     defaults:
@@ -309,7 +339,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ${{ fromJSON(inputs.go-versions) }}
+        go-version: ${{ fromJSON(needs.matrix-versions.outputs.versions) }}
         race: [false, true]
 
     steps:

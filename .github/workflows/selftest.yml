@@ -34,13 +34,34 @@ jobs:
       coverage-mode: atomic
       fuzz-time: 5s
 
-  # No optional input: the behaviour of v2.0.x callers. cmd/ stays excluded.
+  # The v3 defaults: govulncheck on, cmd/ tested, atomic coverage.
   go-ci-defaults:
     uses: ./.github/workflows/go-ci.yml
     with:
       module-dir: testdata/go-ci/lowcov
       go-versions: '["1.23"]'
       run-codecov: false
+
+  matrix-floor:
+    name: Matrix floor cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Extract the step from go-ci.yml
+        run: python3 scripts/selftest/extract-step.py .github/workflows/go-ci.yml "Drop versions below the go directive" > "$RUNNER_TEMP/floor.sh"
+      - name: Versions below go.mod are dropped
+        run: |
+          mkdir -p "$RUNNER_TEMP/m" && cd "$RUNNER_TEMP/m"
+          printf 'module m\n\ngo 1.25.0\n' > go.mod
+          MATRIX='["1.23","1.24","1.25","1.26"]' GITHUB_OUTPUT=out bash "$RUNNER_TEMP/floor.sh"
+          grep -qx 'versions=\["1.25","1.26"\]' out
+      - name: A floor above every version uses the floor
+        run: |
+          mkdir -p "$RUNNER_TEMP/h" && cd "$RUNNER_TEMP/h"
+          printf 'module m\n\ngo 1.27.3\n' > go.mod
+          MATRIX='["1.23","1.26"]' GITHUB_OUTPUT=out bash "$RUNNER_TEMP/floor.sh"
+          grep -qx 'versions=\["1.27"\]' out
 
   coverage-gate:
     name: Coverage gate cases

@@ -6,6 +6,8 @@ The `OTFABRIC_READ_TOKEN` secret gives access to private `github.com/otfabric/*`
 
 **Permissions.** The organisation's default `GITHUB_TOKEN` is read-only, and a caller must grant at least what a called workflow requests, or the run fails at startup with no job started. Grant `contents: read` and `id-token: write` for `go-ci.yml` (Codecov OIDC), and `contents: write` for the release workflows.
 
+**Versions.** `v3` turns on govulncheck, tests `cmd/`, uses atomic coverage and starts the matrix at the go directive. `v2` keeps the older defaults; each repository moves in its own PR.
+
 **Selftest.** [`selftest.yml`](selftest.yml) tests these workflows on the fixtures in `testdata/` on every change. Add a case when you change behaviour.
 
 ## Workflows
@@ -150,15 +152,15 @@ Each workflow's inputs are fully documented with descriptions inside the YAML fi
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `go-versions` | `["1.23","1.24","1.25","1.26"]` | Go versions for the test matrix |
+| `go-versions` | `["1.23","1.24","1.25","1.26"]` | Go versions for the test matrix; versions below the go directive are dropped |
 | `golangci-lint-version` | `v2.1.6` | Pinned linter version |
 | `module-dir` | `.` | Directory of the Go module |
-| `run-govulncheck` | `false` | Run govulncheck in its own job on stable Go |
+| `run-govulncheck` | `true` | Run govulncheck in its own job on stable Go |
 | `govulncheck-version` | `v1.9.0` | Pinned govulncheck version (needs Go >= 1.26) |
 | `coverage-min` | `""` | Minimum total coverage in percent; empty = no gate |
-| `coverage-mode` | `set` | `go test -covermode`; `atomic` matches runs with `-race` |
+| `coverage-mode` | `atomic` | `go test -covermode`; `atomic` matches runs with `-race` |
 | `fuzz-time` | `""` | Run every discovered Fuzz target this long, e.g. `10s`; empty = no fuzzing |
-| `test-exclude-regex` | `(/examples($\|/)\|/cmd($\|/))` | Packages to skip during testing |
+| `test-exclude-regex` | `/example(s)?($\|/)` | Packages to skip during testing; `cmd/` is tested |
 | `coverpkg` | `""` | Optional `-coverpkg` list for merged cross-package coverage (Codecov) |
 | `codecov-name` | `""` | Set to enable Codecov upload |
 
