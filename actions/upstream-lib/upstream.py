@@ -265,7 +265,7 @@ def cmd_report(a):
         if issue:
             m = STATE_RE.search(issue.get("body") or "")
             before = set(json.loads(m.group(1))) if m else set()
-            gh("issue", "edit", str(issue["number"]), "--body-file", "upstream-issue.md")
+            gh("issue", "edit", str(issue["number"]), "--body-file", "upstream-issue.md", "--add-label", "upstream")
             new = [r for r in behind if "%s@%s" % (r["component"], r["latest"]) not in before]
             if new:
                 with open("upstream-comment.md", "w") as f:
