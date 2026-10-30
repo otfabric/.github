@@ -75,6 +75,13 @@ on:
         description: "Base name of the output binary (e.g. myapp)."
         required: true
         type: string
+      module-dir:
+        description: >-
+          Directory of the Go module that holds main-path, relative to the
+          repository root. Set it for a CLI in a nested module.
+        required: false
+        type: string
+        default: "."
       main-path:
         description: "Import path or directory of the main package (e.g. ./cmd/myapp)."
         required: true
@@ -393,7 +400,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ inputs.module-dir }}/go.mod
           cache: true
           cache-dependency-path: |
             go.sum
@@ -422,6 +429,7 @@ jobs:
           CGO_ENABLED: ${{ inputs.cgo-enabled && '1' || '0' }}
           BINARY_NAME: ${{ inputs.binary-name }}
           MAIN_PATH: ${{ inputs.main-path }}
+          MODULE_DIR: ${{ inputs.module-dir }}
           BINARY_EXT: ${{ matrix.ext }}
           TARGET_LABEL: ${{ matrix.label }}
           ARCHIVE_KIND: ${{ matrix.archive }}
@@ -443,9 +451,9 @@ jobs:
 
           if [ -n "$LDFLAGS_TEMPLATE" ]; then
             ldflags="$(echo "$LDFLAGS_TEMPLATE" | envsubst '$VERSION $TAG $COMMIT $BUILD_DATE')"
-            go build -trimpath -ldflags "$ldflags" -o "${out_path}" "${MAIN_PATH}"
+            go -C "$MODULE_DIR" build -trimpath -ldflags "$ldflags" -o "${PWD}/${out_path}" "${MAIN_PATH}"
           else
-            go build -trimpath -o "${out_path}" "${MAIN_PATH}"
+            go -C "$MODULE_DIR" build -trimpath -o "${PWD}/${out_path}" "${MAIN_PATH}"
           fi
 
           if [ "${ARCHIVE_KIND}" = "zip" ]; then
