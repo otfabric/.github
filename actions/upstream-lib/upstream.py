@@ -44,10 +44,10 @@ def write_row(out, row):
 
 def cmd_row(a):
     update = (a.update or "").strip().lower()
-    if a.detail and update not in ("yes", "no"):
+    if a.detail and update not in ("yes", "no", "info"):
         status = "error"
     else:
-        status = {"yes": "behind", "no": "current"}.get(update, "error")
+        status = {"yes": "behind", "no": "current", "info": "info"}.get(update, "error")
     detail = a.detail or ("" if status != "error" else "the upstream lookup did not finish")
     write_row(a.out, {
         "component": a.component, "kind": a.kind, "source": a.source or "",
@@ -165,8 +165,8 @@ def cmd_images(a):
 
 # ---------------------------------------------------------------- report
 
-STATUS = {"behind": "⬆️ **behind**", "current": "✅ current", "error": "⚠️ error"}
-ORDER = {"behind": 0, "error": 1, "current": 2}
+STATUS = {"behind": "⬆️ **behind**", "current": "✅ current", "error": "⚠️ error", "info": "ℹ️ newer upstream"}
+ORDER = {"behind": 0, "error": 1, "info": 2, "current": 3}
 
 
 def esc(text):
@@ -192,6 +192,16 @@ def test_cell(r):
     return cell
 
 
+def known_cell(r):
+    """Known bugs matter for the decision to bump: shown in full only where the pin is behind."""
+    known = esc(r.get("known") or "")
+    if not known:
+        return "—"
+    if r["status"] == "behind":
+        return known
+    return "<sub>%s</sub>" % (known if len(known) <= 80 else known[:77] + "…")
+
+
 def table(rows):
     lines = ["| Component | Kind | Source | Pinned | Latest | Status | Candidate test | Known bugs |",
              "|---|---|---|---|---|---|---|---|"]
@@ -201,7 +211,7 @@ def table(rows):
             status += "<br><sub>%s</sub>" % esc(r["detail"])
         lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
             esc(r["component"]), esc(r["kind"]), esc(r["source"]) or "—", code(r["pinned"]),
-            code(r["latest"]), status, test_cell(r), esc(r.get("known") or "") or "—"))
+            code(r["latest"]), status, test_cell(r), known_cell(r)))
     return "\n".join(lines) + "\n"
 
 
@@ -227,8 +237,11 @@ def cmd_report(a):
                                          os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_RUN_ID", ""))
     notes = open(a.notes).read().strip() if a.notes and os.path.exists(a.notes) else ""
 
+    info = [r for r in rows if r["status"] == "info"]
     headline = "**%d behind**, %d error%s, %d current" % (
-        len(behind), len(errors), "" if len(errors) == 1 else "s", len(rows) - len(behind) - len(errors))
+        len(behind), len(errors), "" if len(errors) == 1 else "s", len(rows) - len(behind) - len(errors) - len(info))
+    if info:
+        headline += ", %d newer upstream (no bump needed)" % len(info)
     body = ["## Upstream check: " + headline, "",
             "Pins were **not** changed. Every row is a pin of this repository compared with the "
             "latest upstream release, commit or base-image digest.", ""]

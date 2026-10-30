@@ -22,7 +22,7 @@ shared parts:
 | `otfabric/.github/actions/upstream-report@main` | Table in the Job Summary; opens / updates / comments on / closes the issue (needs `issues: write`) |
 
 A row is a JSON file `row-*.json` in an artifact named `upstream-row-*` with the fields
-`component, kind, source, pinned, latest, status (current|behind|error), detail,
+`component, kind, source, pinned, latest, status (current|behind|info|error), detail,
 test_outcome, test_result, test_cached, known`. A repository may also write rows
 itself, with `upstream-lib/upstream.py row ...` or its own script.
 

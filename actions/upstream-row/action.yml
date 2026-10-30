@@ -8,7 +8,7 @@ inputs:
   source: { description: "Where the latest was looked up: PyPI, Maven Central, GitHub release, ...", default: "" }
   pinned: { description: The version, tag or commit this repository pins., default: "" }
   latest: { description: The latest upstream version, tag or commit., default: "" }
-  update: { description: "yes when the pin is behind, no when it is current; anything else is an error.", default: "" }
+  update: { description: "yes when the pin is behind, no when it is current, info for a newer upstream that is no reason to bump (e.g. a branch tip next to a release pin); anything else is an error.", default: "" }
   detail: { description: Short note shown under the status (an error message, for instance)., default: "" }
   test-outcome: { description: "Outcome of the candidate test: success, failure or empty.", default: "" }
   test-result: { description: "One-line result of the candidate test (e.g. '42 passed, 0 failed').", default: "" }

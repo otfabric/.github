@@ -12,6 +12,12 @@ inputs:
   result-pattern:
     description: Extended regex of the log line that summarises the result (its last match is shown in the table).
     default: "[0-9]+ passed"
+  cache-paths:
+    description: >-
+      Space-separated paths whose tracked content is part of the cache key, so
+      a change of the build recipe re-tests the candidate. Paths that do not
+      exist are ignored. "{name}" is replaced by the name input.
+    default: "adapters/{name} Makefile scripts tests"
   cache-salt:
     description: Changes the cache key (bump to force a re-test).
     default: "v1"
@@ -30,8 +36,12 @@ runs:
         IN_PINNED: ${{ inputs.pinned }}
         IN_LATEST: ${{ inputs.latest }}
         IN_SALT: ${{ inputs.cache-salt }}
+        IN_PATHS: ${{ inputs.cache-paths }}
       run: |
-        hash=$(printf '%s\n' "$IN_NAME" "$IN_PINNED" "$IN_LATEST" "$IN_SALT" | sha256sum | cut -c1-16)
+        # The recipe: the blob ids of every tracked file under the cache paths.
+        read -ra paths <<< "${IN_PATHS//\{name\}/$IN_NAME}"
+        recipe=$(git ls-files -s -- "${paths[@]}" 2>/dev/null | sha256sum | cut -c1-16)
+        hash=$(printf '%s\n' "$IN_NAME" "$IN_PINNED" "$IN_LATEST" "$IN_SALT" "$recipe" | sha256sum | cut -c1-16)
         echo "key=upstream-candidate-$(echo "$IN_NAME" | tr -c 'A-Za-z0-9._-' '-')-${hash}" >> "$GITHUB_OUTPUT"
         echo "dir=${RUNNER_TEMP}/upstream-candidate-${hash}" >> "$GITHUB_OUTPUT"
 
