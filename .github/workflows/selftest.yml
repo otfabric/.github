@@ -33,6 +33,8 @@ jobs:
       coverage-min: "80"
       coverage-mode: atomic
       fuzz-time: 5s
+      run-policy: true
+      policy-version: v1.1.0
 
   # The v3 defaults: govulncheck on, cmd/ tested, atomic coverage.
   go-ci-defaults:
@@ -41,6 +43,17 @@ jobs:
       module-dir: testdata/go-ci/lowcov
       go-versions: '["1.23"]'
       run-codecov: false
+
+  # The input turns the job off. Its own module-dir: go-ci's concurrency group
+  # is per module-dir, so two calls on one fixture cancel each other.
+  go-ci-no-policy:
+    uses: ./.github/workflows/go-ci.yml
+    with:
+      module-dir: testdata/go-ci/policy
+      go-versions: '["1.23"]'
+      run-codecov: false
+      run-govulncheck: false
+      run-policy: false
 
   matrix-floor:
     name: Matrix floor cases
@@ -83,6 +96,14 @@ jobs:
       - name: At the minimum passes
         working-directory: testdata/go-ci/lowcov
         run: MIN=10 bash "$RUNNER_TEMP/gate.sh"
+
+  policy-gate:
+    name: Policy job cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/selftest/policy.sh
 
   release-notes:
     name: Release notes extraction

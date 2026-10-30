@@ -11,6 +11,8 @@
 #   test-matrix        — Tests and, in a parallel job, the race detector on each version in go-versions.
 #   govulncheck        — Optional (run-govulncheck), on the current stable Go.
 #   fuzz-smoke         — Optional (fuzz-time), every discovered Fuzz target.
+#   policy             — Optional (run-policy), otfabric-policy on repositories
+#                        with .otfabric/policy.yaml, on the current stable Go.
 #
 # Caller example:
 #
@@ -113,11 +115,26 @@ on:
         required: false
         type: string
         default: ""
+      run-policy:
+        description: >-
+          Run otfabric-policy on the repository root, in its own job, when
+          .otfabric/policy.yaml exists. Needs OTFABRIC_READ_TOKEN.
+        required: false
+        type: boolean
+        default: true
+      policy-version:
+        description: "Tag of otfabric/engineering whose otfabric-policy to run."
+        required: false
+        type: string
+        default: "v1.1.0"
     secrets:
       OTFABRIC_READ_TOKEN:
         description: >-
-          PAT with read access to private github.com/otfabric/* modules. Only
-          needed by modules with private dependencies.
+          PAT with read access to private github.com/otfabric/* modules.
+          Needed by modules with private dependencies, and by the policy job
+          in repositories with .otfabric/policy.yaml. Optional here because
+          pull requests from forks never have it; the policy job fails when a
+          same-repository run lacks it.
         required: false
 
 permissions:
@@ -484,3 +501,78 @@ jobs:
           name: fuzz-failures
           path: "**/testdata/fuzz/"
           if-no-files-found: ignore
+
+  # The check is about the repository, so it runs at the root, not module-dir.
+  # A secret cannot be read in a job-level if, and neither can a file, so a
+  # step decides. It runs nothing from the checkout.
+  policy:
+    name: Policy
+    if: inputs.run-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Forks and Dependabot never get the secret, so they skip. A same-repo
+      # run without it is a misconfigured caller: skipping would turn the gate
+      # off unnoticed.
+      - name: Decide whether the policy check runs
+        id: gate
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          run=false
+          if [ ! -f .otfabric/policy.yaml ]; then
+            echo "::notice::otfabric-policy skipped: no .otfabric/policy.yaml"
+          elif [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::notice::otfabric-policy skipped: pull request from a fork has no secrets"
+          elif [ -n "$TOKEN" ]; then
+            run=true
+          elif [ "$ACTOR" = 'dependabot[bot]' ]; then
+            echo "::notice::otfabric-policy skipped: Dependabot runs have no Actions secrets"
+          else
+            echo "::error::OTFABRIC_READ_TOKEN is empty, so otfabric-policy cannot be fetched. Pass it with 'secrets: inherit', or set run-policy: false."
+            exit 1
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      # The checker has its own go.mod, unrelated to the caller's floor.
+      - name: Set up Go
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Configure private module access
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/otfabric/engineering".insteadOf "https://github.com/otfabric/engineering"
+
+      # Exit codes do not depend on the format, so one run gives the log, the
+      # summary and the verdict. Whether findings block is up to the mode in
+      # .otfabric/policy.yaml.
+      - name: otfabric-policy
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          GOWORK: "off"
+          GOPRIVATE: github.com/otfabric/engineering
+          VERSION: ${{ inputs.policy-version }}
+        run: |
+          set -euo pipefail
+          go run "github.com/otfabric/engineering/cmd/otfabric-policy@${VERSION}" check -format markdown . | tee -a "$GITHUB_STEP_SUMMARY"

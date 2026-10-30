@@ -2,7 +2,7 @@
 
 Shared [reusable workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows) for Go projects across the **otfabric** organisation.
 
-The `OTFABRIC_READ_TOKEN` secret gives access to private `github.com/otfabric/*` modules. It is optional in `go-ci.yml`; pass it when a module has private dependencies.
+The `OTFABRIC_READ_TOKEN` secret gives access to private `github.com/otfabric/*` modules. In `go-ci.yml` it is needed when a module has private dependencies, and by the policy job when `.otfabric/policy.yaml` exists. The token must be able to read `otfabric/engineering`.
 
 **Permissions.** The organisation's default `GITHUB_TOKEN` is read-only, and a caller must grant at least what a called workflow requests, or the run fails at startup with no job started. Grant `contents: read` and `id-token: write` for `go-ci.yml` (Codecov OIDC), and `contents: write` for the release workflows.
 
@@ -164,6 +164,8 @@ Each workflow's inputs are fully documented with descriptions inside the YAML fi
 | `coverage-min` | `""` | Minimum total coverage in percent; empty = no gate |
 | `coverage-mode` | `atomic` | `go test -covermode`; `atomic` matches runs with `-race` |
 | `fuzz-time` | `""` | Run every discovered Fuzz target this long, e.g. `10s`; empty = no fuzzing |
+| `run-policy` | `true` | Run `otfabric-policy` in its own job when `.otfabric/policy.yaml` exists |
+| `policy-version` | `v1.1.0` | Tag of `otfabric/engineering` whose `otfabric-policy` to run |
 | `test-exclude-regex` | `/example(s)?($\|/)` | Packages to skip during testing; `cmd/` is tested |
 | `coverpkg` | `""` | Optional `-coverpkg` list for merged cross-package coverage (Codecov) |
 | `codecov-name` | `""` | Set to enable Codecov upload |
@@ -172,6 +174,17 @@ When a repo measures coverage with `go test -coverpkg=...` locally (for example 
 `make coverage` target that merges library packages exercised by conformance
 tests), pass the same package list as `coverpkg` so Codecov matches that gate.
 Leave `coverpkg` empty to keep the default per-package coverage behaviour.
+
+The policy job runs at the repository root on stable Go, without a cache, whatever `module-dir` says. It writes the Markdown report to the job summary; whether findings fail the job is set by the `mode` in `.otfabric/policy.yaml`. A caller that calls `go-ci.yml` twice, as for a nested module, can set `run-policy: false` on the second call.
+
+| Run | Policy job |
+|-----|-----------|
+| No `.otfabric/policy.yaml` | Skips, with a notice |
+| Pull request from a fork | Skips, with a notice |
+| Dependabot, no token | Skips, with a notice |
+| Any other run, no token | Fails: pass the secret, or set `run-policy: false` |
+
+Fork and Dependabot runs never receive Actions secrets. Any other run without the token has a caller that forgot it, and skipping would turn the gate off unnoticed.
 
 ### go-package-release.yml
 
@@ -207,6 +220,6 @@ Both release workflows expose outputs for downstream chaining:
 
 | Secret | Scope | Purpose |
 |--------|-------|---------|
-| `OTFABRIC_READ_TOKEN` | All workflows | PAT with read access to private `github.com/otfabric/*` modules |
+| `OTFABRIC_READ_TOKEN` | All workflows | PAT with read access to private `github.com/otfabric/*` modules, including `otfabric/engineering` |
 
 The workflows also use the automatic `GITHUB_TOKEN` for creating releases and uploading assets. No additional configuration is needed for that.
