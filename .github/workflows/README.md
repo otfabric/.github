@@ -128,6 +128,10 @@ jobs:
       OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 ```
 
+## CLIs in nested modules
+
+A library that bundles a small CLI keeps it in its own module (`cmd/<tool>/go.mod`), so library consumers do not inherit its dependencies. Pass `module-dir: cmd/<tool>` and `main-path: .` to `go-binary-release.yml`. No `go.work` is needed.
+
 ## Release notes via RELEASE.md
 
 Both release workflows support an optional `RELEASE.md` file in the repo root. When a section matching the new tag is found, its content is used as the GitHub Release body. Otherwise a commit-log changelog is generated automatically.
