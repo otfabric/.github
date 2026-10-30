@@ -2,7 +2,11 @@
 
 Shared [reusable workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows) for Go projects across the **otfabric** organisation.
 
-All repositories are private. Every workflow requires the `OTFABRIC_READ_TOKEN` secret for access to private `github.com/otfabric/*` modules.
+The `OTFABRIC_READ_TOKEN` secret gives access to private `github.com/otfabric/*` modules. It is optional in `go-ci.yml`; pass it when a module has private dependencies.
+
+**Permissions.** The organisation's default `GITHUB_TOKEN` is read-only, and a caller must grant at least what a called workflow requests, or the run fails at startup with no job started. Grant `contents: read` and `id-token: write` for `go-ci.yml` (Codecov OIDC), and `contents: write` for the release workflows.
+
+**Selftest.** [`selftest.yml`](selftest.yml) tests these workflows on the fixtures in `testdata/` on every change. Add a case when you change behaviour.
 
 ## Workflows
 
@@ -36,7 +40,7 @@ on:
 
 jobs:
   ci:
-    uses: otfabric/.github/.github/workflows/go-ci.yml@main
+    uses: otfabric/.github/.github/workflows/go-ci.yml@v2
     secrets:
       OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 ```
@@ -55,7 +59,7 @@ on:
 
 jobs:
   release:
-    uses: otfabric/.github/.github/workflows/go-package-release.yml@main
+    uses: otfabric/.github/.github/workflows/go-package-release.yml@v2
     with:
       bump: ${{ inputs.bump }}
     secrets:
@@ -78,7 +82,7 @@ on:
 
 jobs:
   release:
-    uses: otfabric/.github/.github/workflows/go-binary-release.yml@main
+    uses: otfabric/.github/.github/workflows/go-binary-release.yml@v2
     with:
       bump: ${{ inputs.bump }}
       binary-name: myapp
@@ -104,7 +108,7 @@ on:
 
 jobs:
   package:
-    uses: otfabric/.github/.github/workflows/go-package-release.yml@main
+    uses: otfabric/.github/.github/workflows/go-package-release.yml@v2
     with:
       bump: ${{ inputs.bump }}
     secrets:
@@ -112,7 +116,7 @@ jobs:
 
   binary:
     needs: package
-    uses: otfabric/.github/.github/workflows/go-binary-release.yml@main
+    uses: otfabric/.github/.github/workflows/go-binary-release.yml@v2
     with:
       bump: none
       binary-name: myapp
@@ -148,6 +152,12 @@ Each workflow's inputs are fully documented with descriptions inside the YAML fi
 |-------|---------|-------------|
 | `go-versions` | `["1.23","1.24","1.25","1.26"]` | Go versions for the test matrix |
 | `golangci-lint-version` | `v2.1.6` | Pinned linter version |
+| `module-dir` | `.` | Directory of the Go module |
+| `run-govulncheck` | `false` | Run govulncheck in its own job on stable Go |
+| `govulncheck-version` | `v1.9.0` | Pinned govulncheck version (needs Go >= 1.26) |
+| `coverage-min` | `""` | Minimum total coverage in percent; empty = no gate |
+| `coverage-mode` | `set` | `go test -covermode`; `atomic` matches runs with `-race` |
+| `fuzz-time` | `""` | Run every discovered Fuzz target this long, e.g. `10s`; empty = no fuzzing |
 | `test-exclude-regex` | `(/examples($\|/)\|/cmd($\|/))` | Packages to skip during testing |
 | `coverpkg` | `""` | Optional `-coverpkg` list for merged cross-package coverage (Codecov) |
 | `codecov-name` | `""` | Set to enable Codecov upload |

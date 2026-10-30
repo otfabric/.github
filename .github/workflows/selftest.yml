@@ -1,0 +1,72 @@
+# Regression tests of the shared workflows (ADR-0008 in otfabric/engineering).
+#
+# The go-ci job calls the workflow by local path, so a pull request tests its
+# own version. A job that calls a reusable workflow cannot continue on error,
+# so failing cases run the exact step scripts, extracted from the workflows.
+name: Selftest
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "actions/**"
+      - "scripts/selftest/**"
+      - "testdata/**"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# go-ci requests id-token: write; a caller must grant what it calls.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Every optional gate on, on a module that passes them all, cmd/ tested.
+  go-ci-all-gates:
+    uses: ./.github/workflows/go-ci.yml
+    with:
+      module-dir: testdata/go-ci/pass
+      go-versions: '["1.23","1.26"]'
+      test-exclude-regex: "/example(s)?($|/)"
+      run-codecov: false
+      run-govulncheck: true
+      coverage-min: "80"
+      coverage-mode: atomic
+      fuzz-time: 5s
+
+  # No optional input: the behaviour of v2.0.x callers. cmd/ stays excluded.
+  go-ci-defaults:
+    uses: ./.github/workflows/go-ci.yml
+    with:
+      module-dir: testdata/go-ci/lowcov
+      go-versions: '["1.23"]'
+      run-codecov: false
+
+  coverage-gate:
+    name: Coverage gate cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: testdata/go-ci/lowcov/go.mod
+          cache: false
+      - name: Extract the gate from go-ci.yml
+        run: python3 scripts/selftest/extract-step.py .github/workflows/go-ci.yml "Coverage gate" > "$RUNNER_TEMP/gate.sh"
+      - name: Below the minimum fails
+        working-directory: testdata/go-ci/lowcov
+        run: |
+          go test -coverprofile=coverage.out ./...
+          if MIN=90 bash "$RUNNER_TEMP/gate.sh"; then echo "::error::gate passed below the minimum"; exit 1; fi
+      - name: At the minimum passes
+        working-directory: testdata/go-ci/lowcov
+        run: MIN=10 bash "$RUNNER_TEMP/gate.sh"
+
+  release-notes:
+    name: Release notes extraction
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/selftest/release-notes.sh

@@ -22,7 +22,7 @@
 #
 #   jobs:
 #     release:
-#       uses: otfabric/.github/.github/workflows/go-package-release.yml@main
+#       uses: otfabric/.github/.github/workflows/go-package-release.yml@v2
 #       with:
 #         bump: minor
 #       secrets:
