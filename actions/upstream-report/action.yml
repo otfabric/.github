@@ -1,0 +1,47 @@
+name: Upstream report
+description: >-
+  Collects the pin-vs-latest rows uploaded by upstream-row and upstream-images,
+  writes the table to the Job Summary and opens or updates the tracking issue
+  (with a comment when a new upstream version shows up), or closes it once
+  every pin is current. Fails when a lookup errored or a job did not finish.
+  Needs `issues: write`.
+inputs:
+  needs:
+    description: "toJSON(needs) of the calling job, to tell a complete run from an incomplete one."
+    default: "{}"
+  notes:
+    description: Markdown appended under the table (where the pins live, how to bump them).
+    default: ""
+  title:
+    description: Title of the tracking issue.
+    default: "Upstream releases: pins behind the latest"
+  issue:
+    description: Set to false to only write the Job Summary.
+    default: "true"
+  token:
+    description: Token for the issue.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Download the rows
+      uses: actions/download-artifact@v8
+      with:
+        pattern: upstream-row-*
+        path: ${{ runner.temp }}/upstream-rows
+
+    - name: Table, summary and issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        IN_NEEDS: ${{ inputs.needs }}
+        IN_NOTES: ${{ inputs.notes }}
+        IN_TITLE: ${{ inputs.title }}
+        IN_ISSUE: ${{ inputs.issue }}
+      run: |
+        printf '%s\n' "$IN_NOTES" > "${RUNNER_TEMP}/upstream-notes.md"
+        python3 "${{ github.action_path }}/../upstream-lib/upstream.py" report \
+          --rows "${RUNNER_TEMP}/upstream-rows" --needs "$IN_NEEDS" \
+          --notes "${RUNNER_TEMP}/upstream-notes.md" --title "$IN_TITLE" \
+          $([ "$IN_ISSUE" = true ] || echo --no-issue)

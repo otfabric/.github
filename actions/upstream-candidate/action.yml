@@ -1,0 +1,90 @@
+name: Upstream candidate test
+description: >-
+  Builds and tests a candidate (the latest upstream of one component) with the
+  given command, unless that same pin -> latest pair was already tested by an
+  earlier run: its result is then reused from the Actions cache, so a daily
+  schedule does not rebuild a candidate every day. Never fails the job.
+inputs:
+  name: { description: Component name (unique within the repository)., required: true }
+  pinned: { description: The pinned version or commit., required: true }
+  latest: { description: The candidate version or commit., required: true }
+  command: { description: Shell command that builds and tests the candidate; its exit code is the outcome., required: true }
+  result-pattern:
+    description: Extended regex of the log line that summarises the result (its last match is shown in the table).
+    default: "[0-9]+ passed"
+  cache-salt:
+    description: Changes the cache key (bump to force a re-test).
+    default: "v1"
+outputs:
+  outcome: { description: success or failure., value: "${{ steps.result.outputs.outcome }}" }
+  result: { description: The summary line of the log., value: "${{ steps.result.outputs.result }}" }
+  cached: { description: yes when reused from an earlier run., value: "${{ steps.result.outputs.cached }}" }
+runs:
+  using: composite
+  steps:
+    - name: Key
+      id: key
+      shell: bash
+      env:
+        IN_NAME: ${{ inputs.name }}
+        IN_PINNED: ${{ inputs.pinned }}
+        IN_LATEST: ${{ inputs.latest }}
+        IN_SALT: ${{ inputs.cache-salt }}
+      run: |
+        hash=$(printf '%s\n' "$IN_NAME" "$IN_PINNED" "$IN_LATEST" "$IN_SALT" | sha256sum | cut -c1-16)
+        echo "key=upstream-candidate-$(echo "$IN_NAME" | tr -c 'A-Za-z0-9._-' '-')-${hash}" >> "$GITHUB_OUTPUT"
+        echo "dir=${RUNNER_TEMP}/upstream-candidate-${hash}" >> "$GITHUB_OUTPUT"
+
+    - name: Earlier result
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.key.outputs.dir }}
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Build and test the candidate
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        IN_COMMAND: ${{ inputs.command }}
+        IN_PATTERN: ${{ inputs.result-pattern }}
+        IN_NAME: ${{ inputs.name }}
+        DIR: ${{ steps.key.outputs.dir }}
+      run: |
+        mkdir -p "$DIR"
+        log="candidate-$(echo "$IN_NAME" | tr -c 'A-Za-z0-9._-' '-').log"
+        set +e -o pipefail
+        bash -eo pipefail -c "$IN_COMMAND" 2>&1 | tee "$log"
+        rc=$?
+        set -e
+        [ "$rc" -eq 0 ] && echo success > "$DIR/outcome" || echo failure > "$DIR/outcome"
+        { grep -E "$IN_PATTERN" "$log" | tail -1 | sed -E 's/^\[[a-z-]+\] //' || true; } > "$DIR/result"
+        echo "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > "$DIR/run"
+        echo "log=$log" >> "$GITHUB_OUTPUT"
+
+    - name: Keep the result
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.key.outputs.dir }}
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Result
+      id: result
+      shell: bash
+      env:
+        DIR: ${{ steps.key.outputs.dir }}
+        HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        echo "outcome=$(cat "$DIR/outcome" 2>/dev/null || echo failure)" >> "$GITHUB_OUTPUT"
+        echo "result=$(head -c 200 "$DIR/result" 2>/dev/null | tr -d '\n')" >> "$GITHUB_OUTPUT"
+        echo "cached=$([ "$HIT" = true ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+        [ "$HIT" = true ] && echo "Reused the result of $(cat "$DIR/run")." || true
+
+    - name: Upload the log
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: upstream-log-${{ inputs.name }}
+        path: candidate-*.log
+        if-no-files-found: ignore

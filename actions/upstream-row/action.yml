@@ -1,0 +1,48 @@
+name: Upstream table row
+description: >-
+  Writes one row of the pin-vs-latest table (a library, tool or commit pin)
+  and uploads it for upstream-report.
+inputs:
+  component: { description: Name shown in the table (adapter or stack)., required: true }
+  kind: { description: "library, commit, tool, broker, ...", default: library }
+  source: { description: "Where the latest was looked up: PyPI, Maven Central, GitHub release, ...", default: "" }
+  pinned: { description: The version, tag or commit this repository pins., default: "" }
+  latest: { description: The latest upstream version, tag or commit., default: "" }
+  update: { description: "yes when the pin is behind, no when it is current; anything else is an error.", default: "" }
+  detail: { description: Short note shown under the status (an error message, for instance)., default: "" }
+  test-outcome: { description: "Outcome of the candidate test: success, failure or empty.", default: "" }
+  test-result: { description: "One-line result of the candidate test (e.g. '42 passed, 0 failed').", default: "" }
+  test-cached: { description: yes when the candidate result comes from an earlier run., default: "no" }
+  known: { description: Known bugs of the latest version., default: "" }
+runs:
+  using: composite
+  steps:
+    - name: Write the row
+      id: row
+      shell: bash
+      env:
+        IN_COMPONENT: ${{ inputs.component }}
+        IN_KIND: ${{ inputs.kind }}
+        IN_SOURCE: ${{ inputs.source }}
+        IN_PINNED: ${{ inputs.pinned }}
+        IN_LATEST: ${{ inputs.latest }}
+        IN_UPDATE: ${{ inputs.update }}
+        IN_DETAIL: ${{ inputs.detail }}
+        IN_OUTCOME: ${{ inputs.test-outcome }}
+        IN_RESULT: ${{ inputs.test-result }}
+        IN_CACHED: ${{ inputs.test-cached }}
+        IN_KNOWN: ${{ inputs.known }}
+      run: |
+        out="${RUNNER_TEMP}/upstream-rows-$(echo "${IN_KIND}-${IN_COMPONENT}" | tr -c 'A-Za-z0-9._-' '-')"
+        python3 "${{ github.action_path }}/../upstream-lib/upstream.py" row --out "$out" \
+          --component "$IN_COMPONENT" --kind "$IN_KIND" --source "$IN_SOURCE" --pinned "$IN_PINNED" \
+          --latest "$IN_LATEST" --update "$IN_UPDATE" --detail "$IN_DETAIL" --test-outcome "$IN_OUTCOME" \
+          --test-result "$IN_RESULT" --test-cached "$IN_CACHED" --known "$IN_KNOWN"
+        echo "dir=$out" >> "$GITHUB_OUTPUT"
+        echo "name=upstream-row-$(basename "$out" | sed 's/^upstream-rows-//')" >> "$GITHUB_OUTPUT"
+
+    - name: Upload the row
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ steps.row.outputs.name }}
+        path: ${{ steps.row.outputs.dir }}

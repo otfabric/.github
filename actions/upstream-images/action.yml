@@ -1,0 +1,22 @@
+name: Upstream base images
+description: >-
+  Compares every base image the repository pins by digest (Dockerfiles,
+  compose and YAML files) with the digest its tag points to now, and uploads
+  one pin-vs-latest row per image for upstream-report.
+inputs:
+  root:
+    description: Directory of the checkout to scan.
+    default: "."
+runs:
+  using: composite
+  steps:
+    - name: Compare the pinned digests with the registries
+      shell: bash
+      run: python3 "${{ github.action_path }}/../upstream-lib/upstream.py" images --root "${{ inputs.root }}" --out "${{ runner.temp }}/upstream-rows-images"
+
+    - name: Upload the rows
+      uses: actions/upload-artifact@v7
+      with:
+        name: upstream-row-base-images
+        path: ${{ runner.temp }}/upstream-rows-images
+        if-no-files-found: ignore
