@@ -9,12 +9,14 @@
 #   lint-and-coverage  — golangci-lint, go vet, and tests with coverage using
 #                        the Go version from go.mod (floor: 1.23).
 #   test-matrix        — Tests and, in a parallel job, the race detector on each version in go-versions.
+#   govulncheck        — Optional (run-govulncheck), on the current stable Go.
+#   fuzz-smoke         — Optional (fuzz-time), every discovered Fuzz target.
 #
 # Caller example:
 #
 #   jobs:
 #     ci:
-#       uses: otfabric/.github/.github/workflows/go-ci.yml@main
+#       uses: otfabric/.github/.github/workflows/go-ci.yml@v2
 #       with:
 #         go-versions: '["1.24","1.25","1.26"]'
 #         codecov-name: my-project
@@ -76,10 +78,46 @@ on:
         required: false
         type: string
         default: "v2.1.6"
+      module-dir:
+        description: "Directory of the Go module, relative to the repository root."
+        required: false
+        type: string
+        default: "."
+      run-govulncheck:
+        description: "Run govulncheck in its own job, on the current stable Go."
+        required: false
+        type: boolean
+        default: false
+      govulncheck-version:
+        description: "govulncheck version (v1.9.0 needs Go >= 1.26, which the stable job provides)."
+        required: false
+        type: string
+        default: "v1.9.0"
+      coverage-min:
+        description: >-
+          Minimum total statement coverage in percent, e.g. "90". The job fails
+          below it. Leave empty for no gate.
+        required: false
+        type: string
+        default: ""
+      coverage-mode:
+        description: "go test -covermode for the coverage run: set, count or atomic."
+        required: false
+        type: string
+        default: "set"
+      fuzz-time:
+        description: >-
+          Run every Fuzz target for this long, e.g. "10s", in a separate job.
+          Targets are discovered, never listed. Leave empty for no fuzzing.
+        required: false
+        type: string
+        default: ""
     secrets:
       OTFABRIC_READ_TOKEN:
-        description: "PAT with read access to private github.com/otfabric/* modules."
-        required: true
+        description: >-
+          PAT with read access to private github.com/otfabric/* modules. Only
+          needed by modules with private dependencies.
+        required: false
 
 permissions:
   contents: read
@@ -89,7 +127,7 @@ env:
   GOPRIVATE: github.com/otfabric/*
 
 concurrency:
-  group: go-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: go-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.module-dir }}
   cancel-in-progress: true
 
 jobs:
@@ -97,6 +135,9 @@ jobs:
     name: Lint & Coverage
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.module-dir }}
 
     steps:
       - name: Checkout
@@ -143,7 +184,9 @@ jobs:
         env:
           TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
         run: |
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+          if [ -n "${TOKEN}" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/otfabric/".insteadOf "https://github.com/otfabric/"
+          fi
 
       - name: Verify module tidiness
         shell: bash
@@ -189,6 +232,7 @@ jobs:
         shell: bash
         env:
           COVERPKG: ${{ inputs.coverpkg }}
+          COVERMODE: ${{ inputs.coverage-mode }}
         run: |
           set -euo pipefail
           cover_args=()
@@ -198,11 +242,24 @@ jobs:
           fi
           # shellcheck disable=SC2086 # intentional: package list is space-separated
           go test -count=1 -timeout=120s \
-            -coverprofile=coverage.out -covermode=set \
+            -coverprofile=coverage.out -covermode="${COVERMODE}" \
             "${cover_args[@]}" \
             ${{ steps.pkgs.outputs.list }}
           go tool cover -func=coverage.out | tee coverage.txt
           go tool cover -html=coverage.out -o coverage.html
+
+      - name: Coverage gate
+        if: inputs.coverage-min != ''
+        shell: bash
+        env:
+          MIN: ${{ inputs.coverage-min }}
+        run: |
+          set -euo pipefail
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%","",$3); print $3}')
+          awk -v t="$total" -v m="$MIN" 'BEGIN {
+            if (t+0 < m+0) { printf "::error::coverage %.1f%% is below the minimum %s%%\n", t, m; exit 1 }
+            printf "coverage %.1f%% >= %s%%\n", t, m
+          }'
 
       - name: Coverage summary
         shell: bash
@@ -220,16 +277,16 @@ jobs:
         with:
           name: coverage-go-mod-version
           path: |
-            coverage.out
-            coverage.txt
-            coverage.html
+            ${{ inputs.module-dir }}/coverage.out
+            ${{ inputs.module-dir }}/coverage.txt
+            ${{ inputs.module-dir }}/coverage.html
 
       - name: Upload to Codecov
         if: inputs.run-codecov && inputs.codecov-name != ''
         uses: codecov/codecov-action@v7
         with:
           use_oidc: true
-          files: coverage.out
+          files: ${{ inputs.module-dir }}/coverage.out
           flags: unittests
           name: ${{ inputs.codecov-name }}
           fail_ci_if_error: false
@@ -246,6 +303,9 @@ jobs:
     name: ${{ matrix.race && 'Race' || 'Test' }} (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.module-dir }}
     strategy:
       fail-fast: false
       matrix:
@@ -270,7 +330,9 @@ jobs:
         env:
           TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
         run: |
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+          if [ -n "${TOKEN}" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/otfabric/".insteadOf "https://github.com/otfabric/"
+          fi
 
       - name: Download dependencies
         shell: bash
@@ -299,3 +361,94 @@ jobs:
         if: ${{ matrix.race }}
         shell: bash
         run: go test -count=1 -timeout=120s -race ${{ steps.pkgs.outputs.list }}
+
+  # ---------------------------------------------------------------------------
+  # Optional gates. Off by default so that existing callers keep their
+  # behaviour; each runs apart from the matrix.
+  # ---------------------------------------------------------------------------
+  govulncheck:
+    name: govulncheck
+    if: inputs.run-govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.module-dir }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Reports standard library findings for the toolchain it runs with.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: |
+          if [ -n "${TOKEN}" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/otfabric/".insteadOf "https://github.com/otfabric/"
+          fi
+
+      - name: govulncheck
+        shell: bash
+        env:
+          VERSION: ${{ inputs.govulncheck-version }}
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${VERSION}" ./...
+
+  fuzz-smoke:
+    name: Fuzz smoke
+    if: inputs.fuzz-time != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.module-dir }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ inputs.module-dir }}/go.mod
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: |
+          if [ -n "${TOKEN}" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/otfabric/".insteadOf "https://github.com/otfabric/"
+          fi
+
+      - name: Fuzz every target
+        shell: bash
+        env:
+          FUZZTIME: ${{ inputs.fuzz-time }}
+        run: |
+          set -euo pipefail
+          for pkg in $(go list ./...); do
+            for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
+              echo "::group::$pkg $target"
+              go test -run '^$' -fuzz "^${target}\$" -fuzztime "$FUZZTIME" "$pkg"
+              echo "::endgroup::"
+            done
+          done
+
+      - name: Keep failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-failures
+          path: "**/testdata/fuzz/"
+          if-no-files-found: ignore
