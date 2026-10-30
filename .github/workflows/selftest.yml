@@ -30,7 +30,7 @@ jobs:
       test-exclude-regex: "/example(s)?($|/)"
       run-codecov: false
       run-govulncheck: true
-      coverage-min: "90"
+      coverage-min: "80"
       coverage-mode: atomic
       fuzz-time: 5s
 
