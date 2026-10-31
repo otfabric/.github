@@ -1,0 +1,29 @@
+rules:
+  - id: otfabric-go-http-path-to-file
+    languages: [go]
+    severity: ERROR
+    message: >-
+      A file path is built from the request, so "../" reaches outside the
+      intended directory. Use an os.Root, or fs.ValidPath and a fixed base.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-22: Improper Limitation of a Pathname to a Restricted Directory"]
+      catalog: paths
+      limitation: >-
+        The request value has to appear in the call. Gosec G703 follows taint
+        further; neither sees validation in a helper as a fix or as a flaw.
+    patterns:
+      - pattern-either:
+          - pattern: filepath.Join(..., $R.URL.Path, ...)
+          - pattern: filepath.Join(..., $R.URL.Query().Get(...), ...)
+          - pattern: filepath.Join(..., $R.FormValue(...), ...)
+          - pattern: filepath.Join(..., $R.PathValue(...), ...)
+          - pattern: os.Open($R.URL.Path)
+          - pattern: os.Open($R.URL.Query().Get(...))
+          - pattern: os.Open($R.FormValue(...))
+          - pattern: os.ReadFile($R.URL.Path)
+          - pattern: os.ReadFile($R.URL.Query().Get(...))
+          - pattern: os.ReadFile($R.FormValue(...))
+      - pattern-inside: |
+          func $F(..., $R *http.Request, ...) { ... }

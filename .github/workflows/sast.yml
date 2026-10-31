@@ -3,7 +3,7 @@
 # SAST — Reusable Workflow
 #
 # Gosec on the Go module in module-dir and Opengrep on the repository, with the
-# pinned scanners and the curated rules of sast/ at bundle-ref. Called from
+# pinned scanners and the versioned rules of sast/ at bundle-ref. Called from
 # go-ci.yml (run-sast) or directly by a repository without Go. How to adopt it,
 # the rule catalog and the baseline: sast/README.md.
 #
@@ -12,7 +12,7 @@
 # that one command, and nothing the checkout holds runs (no build, no tests).
 #
 # A scan that did not complete and a finding are different failures: the steps
-# "Scan completed" (exit 3) and "No blocking findings" (exit 1).
+# "Scan completed" (exit 3, in every mode) and "No blocking findings" (exit 1).
 #
 # Caller example:
 #
@@ -30,7 +30,8 @@ on:
     inputs:
       mode:
         description: >-
-          report: findings never fail the job; an incomplete scan only warns.
+          report: findings never fail the job. In every mode, a scan that did
+          not complete does.
           baseline: fails on findings at the thresholds with no valid record in
           .otfabric/sast-baseline.json. enforce: as baseline, but records in
           state baseline no longer count. Same meaning as mode in
@@ -96,7 +97,8 @@ on:
         description: >-
           Read access to private github.com/otfabric/* modules, needed only when
           module-dir has them as dependencies. Forks and Dependabot never have
-          it; such a run reports an incomplete scan.
+          it; such a run fails with an incomplete scan, like the test jobs of a
+          module that cannot be built without those dependencies.
         required: false
     outputs:
       scan-status:
@@ -196,7 +198,7 @@ jobs:
         shell: bash
         env:
           OPENGREP_EXCLUDE: ${{ inputs.opengrep-exclude }}
-        run: OPENGREP_BIN="$RUNNER_TEMP/tools/opengrep" bash "$RUNNER_TEMP/bundle/sast/run-opengrep.sh" "$RUNNER_TEMP/sast" "$RUNNER_TEMP/tools/rules"
+        run: OPENGREP_BIN="$RUNNER_TEMP/tools/opengrep" bash "$RUNNER_TEMP/bundle/sast/run-opengrep.sh" "$RUNNER_TEMP/sast"
 
       - name: Evaluate
         id: evaluate

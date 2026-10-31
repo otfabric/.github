@@ -76,6 +76,23 @@ evaluate baseline > /dev/null
 [ "$(status "['baseline']['review_due'][0]")" = "$fp" ] || fail "a record past six months is due for review"
 record baseline ', "reviewed": "2026-10-31", "reconsider": "x"'
 evaluate baseline > /dev/null; expect "debt with no end is invalid" 3 check-scan
+for state in confirmed probable; do
+  record "$state" ', "reviewed": "2026-10-31", "expires": "2027-04-30"'
+  evaluate baseline > /dev/null; expect "$state in baseline mode" 0 check-findings
+  evaluate enforce > /dev/null; expect "$state in enforce mode" 1 check-findings
+  [ "$(status "['counts']['$state']")" = 1 ] || fail "$state is counted"
+done
+record not-applicable ', "reviewed": "2026-10-31", "reconsider": "when the profile changes"'
+evaluate enforce > /dev/null; expect "not applicable in enforce mode" 0 check-findings
+python3 -c "import json; assert json.load(open('$tmp/out/gosec.sarif'))['runs'][0]['results'][0]['suppressions'][0]['justification'] == 'not-applicable'" || fail "a waiver reaches SARIF"
+record no-such-state ', "reviewed": "2026-10-31", "expires": "2027-04-30"'
+evaluate report > /dev/null; expect "an unknown state fails validation, in report mode too" 3 check-scan
+record accepted-risk ', "reviewed": "2026-10-31", "expires": "2027-04-30", "scope": "*"'
+evaluate report > /dev/null; expect "an unknown field fails validation" 3 check-scan
+fp_real=$fp; fp="gosec/G401/$(printf '%s' "$fp" | sed 's|.*/||')"
+record accepted-risk ', "reviewed": "2026-10-31", "expires": "2027-04-30"'
+evaluate report > /dev/null; expect "a fingerprint of another rule fails validation" 3 check-scan
+fp=$fp_real
 echo '{"schema": 1, "findings": [{"fingerprint": "x"}]}' > "$repo/.otfabric/sast-baseline.json"
 evaluate baseline > /dev/null; expect "an invalid record is a broken gate" 3 check-scan
 echo 'nope' > "$repo/.otfabric/sast-baseline.json"
@@ -102,6 +119,10 @@ report 0 "[]"; rm "$tmp/out/gosec.exit"
 evaluate enforce > /dev/null; expect "no exit code" 3 check-scan
 report 0 "[]"; echo '{"Issues": "x"}' > "$tmp/out/gosec.json"
 evaluate enforce > /dev/null; expect "unknown shape" 3 check-scan
+report 2 "[]"; echo 'boom' > "$tmp/out/gosec.error"
+evaluate report > /dev/null; expect "a failed scan fails in report mode too" 3 check-scan
+report 0 "[]"; echo 'no Go code' > "$tmp/out/gosec.not-applicable"
+evaluate enforce > /dev/null; expect "gosec alone, not applicable, is no scan" 3 check-scan
 rm -rf "$tmp/out"; mkdir -p "$tmp/out"
 expect "no status at all" 3 check-scan
 python3 "$gate" evaluate --out "$tmp/out" --root "$repo" --bundle "$root" --gosec false --opengrep false --mode enforce > /dev/null

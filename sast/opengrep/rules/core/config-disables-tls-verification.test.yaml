@@ -1,0 +1,10 @@
+vulnerable:
+  # ruleid: otfabric-config-disables-tls-verification
+  insecure_skip_verify: true
+  # ruleid: otfabric-config-disables-tls-verification
+  insecureSkipVerify: true
+safe:
+  # ok: otfabric-config-disables-tls-verification
+  insecure_skip_verify: false
+  # ok: otfabric-config-disables-tls-verification
+  enabled: true

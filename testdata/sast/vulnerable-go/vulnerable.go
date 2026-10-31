@@ -11,8 +11,18 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 )
+
+// Gosec G101: a hardcoded credential.
+const adminPassword = "xK9mQ2vL7pR4nT8wZ3bF6hJ1"
+
+// Reaches outside /srv with "../".
+func UnsafePath(r *http.Request) ([]byte, error) {
+	return os.ReadFile(filepath.Join("/srv", r.URL.Query().Get("name")))
+}
 
 // Gosec G402, high severity and confidence.
 func InsecureTLS() *tls.Config {

@@ -1,0 +1,12 @@
+# ruleid: otfabric-private-key-in-tree
+-----BEGIN RSA PRIVATE KEY-----
+bm90LWEta2V5LW9ubHktYS1maXh0dXJl
+-----END RSA PRIVATE KEY-----
+
+# ok: otfabric-private-key-in-tree
+-----BEGIN PUBLIC KEY-----
+bm90LWEta2V5LW9ubHktYS1maXh0dXJl
+-----END PUBLIC KEY-----
+
+# ok: otfabric-private-key-in-tree
+The file starts with -----BEGIN PRIVATE KEY----- as RFC 5958 says.

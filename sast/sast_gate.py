@@ -2,9 +2,10 @@
 """Normalise scanner output, apply .otfabric/sast-baseline.json, report and gate.
 
   sast_gate.py evaluate   reports → findings.json, status.json, SARIF, summary.md
-  sast_gate.py check-scan      exit 3 when a scan did not complete (enforcing modes)
+  sast_gate.py check-scan      exit 3 when a scan did not complete, in every mode
   sast_gate.py check-findings  exit 1 when a finding blocks
   sast_gate.py baseline        record current findings as triage debt
+  sast_gate.py rules-digest    print the digest of the rule set, for versions.env
 
 Exit codes match otfabric-policy: 1 for findings, 3 for anything that means the
 result cannot be trusted. Output carries no source lines: a finding of a secret
@@ -21,7 +22,11 @@ import sys
 SCHEMA = 1
 LEVELS = {"low": 0, "medium": 1, "high": 2}
 MODES = ("report", "baseline", "enforce")
-STATES = ("baseline", "false-positive", "accepted-risk")
+# Debt: known, not resolved, passes in baseline mode and blocks in enforce.
+DEBT_STATES = ("baseline", "confirmed", "probable")
+# Waived: looked at and decided, passes in every mode.
+WAIVED_STATES = ("false-positive", "accepted-risk", "not-applicable")
+STATES = DEBT_STATES + WAIVED_STATES
 REVIEW_DAYS = 183  # docs/exceptions: reviewed date + 6 months
 # Types of opengrep error that mean a rule did not finish on a file. Partial
 # parsing is expected in workflow templates and only noted.
@@ -73,6 +78,9 @@ def relative(root, path, module_dir):
 def parse_gosec(path, root, module_dir):
     """Findings and (status, reason, files) of a gosec report."""
     out_dir = os.path.dirname(path)
+    not_applicable = read_text(os.path.join(out_dir, "gosec.not-applicable"))
+    if not_applicable:
+        return [], ("not-applicable", not_applicable, 0)
     code = read_text(os.path.join(out_dir, "gosec.exit"))
     error = read_text(os.path.join(out_dir, "gosec.error"))
     if code != "0":
@@ -106,23 +114,12 @@ def parse_gosec(path, root, module_dir):
     return findings, ("completed", "", files)
 
 
-def load_overrides(catalog):
-    """rule id → confidence from the upstream catalog (file stem = rule id)."""
-    overrides = {}
-    for raw in read_text(catalog).splitlines():
-        parts = raw.split()
-        if parts and not raw.startswith("#") and len(parts) > 1 and parts[1].startswith("confidence="):
-            stem = os.path.basename(parts[0]).rsplit(".", 1)[0]
-            overrides[stem] = parts[1].split("=", 1)[1].lower()
-    return overrides
-
-
 def error_type(e):
     t = e.get("type")
     return t[0] if isinstance(t, list) and t else str(t)
 
 
-def parse_opengrep(path, root, overrides):
+def parse_opengrep(path, root):
     out_dir = os.path.dirname(path)
     code = read_text(os.path.join(out_dir, "opengrep.exit"))
     error = read_text(os.path.join(out_dir, "opengrep.error"))
@@ -147,7 +144,7 @@ def parse_opengrep(path, root, overrides):
             "tool": "opengrep",
             "rule": rule,
             "severity": sev.get(extra.get("severity"), "low"),
-            "confidence": overrides.get(rule, str(meta.get("confidence", "low")).lower()),
+            "confidence": str(meta.get("confidence", "low")).lower(),
             "cwe": str(cwe).split(":")[0],
             "path": relative(root, r.get("path", ""), ""),
             "line": int(r.get("start", {}).get("line", 0)),
@@ -187,8 +184,10 @@ def validate_record(r, today):
         errs.append("missing expires or reconsider")
     if r.get("state") not in STATES and r.get("state"):
         errs.append(f"unknown state {r['state']}")
-    if r.get("state") == "baseline" and not r.get("expires"):
-        errs.append("state baseline needs expires: debt gets looked at again")
+    if r.get("state") in DEBT_STATES and not r.get("expires"):
+        errs.append(f"state {r['state']} needs expires: debt gets looked at again")
+    if r.get("fingerprint") and not str(r["fingerprint"]).startswith(f"{r.get('tool')}/{r.get('rule')}/"):
+        errs.append("fingerprint does not belong to this tool and rule")
     for k in ("reviewed", "expires"):
         if r.get(k):
             try:
@@ -250,7 +249,7 @@ def apply_baseline(findings, records, args):
             f["blocking"] = False
         elif rec:
             f["disposition"] = rec["state"]
-            f["blocking"] = args.mode == "enforce" and rec["state"] == "baseline"
+            f["blocking"] = args.mode == "enforce" and rec["state"] in DEBT_STATES
         else:
             f["disposition"] = "new"
             f["blocking"] = args.mode != "report"
@@ -278,7 +277,7 @@ def sarif(tool, version, findings, version_uri):
             "baselineState": "new" if f["disposition"] in ("new", "below-threshold") else "unchanged",
             "properties": {"confidence": f["confidence"], "disposition": f["disposition"]},
         }
-        if f["disposition"] in ("false-positive", "accepted-risk"):
+        if f["disposition"] in WAIVED_STATES:
             result["suppressions"] = [{"kind": "external", "justification": f["disposition"]}]
         results.append(result)
     return {
@@ -304,19 +303,22 @@ def versions(path):
 
 
 def rules_digest(bundle):
+    """SHA-256 over the name and content of every rule file. Fixtures do not count."""
     h = hashlib.sha256()
-    for name in ("sast/versions.env", "sast/opengrep/upstream.txt"):
-        h.update(read_text(os.path.join(bundle, name)).encode())
     rules = os.path.join(bundle, "sast/opengrep/rules")
-    if os.path.isdir(rules):
-        for name in sorted(os.listdir(rules)):
-            if name.endswith(".yaml"):
-                h.update(read_text(os.path.join(rules, name)).encode())
+    names = []
+    for folder, _, files in os.walk(rules):
+        names += [os.path.join(folder, n) for n in files if n.endswith(".yaml") and not n.endswith(".test.yaml")]
+    for name in sorted(names):
+        h.update(os.path.relpath(name, rules).replace(os.sep, "/").encode() + b"\0")
+        with open(name, "rb") as f:
+            h.update(f.read() + b"\0")
     return h.hexdigest()
 
 
 def evaluate(args):
     today = datetime.date.fromisoformat(args.today) if args.today else datetime.date.today()
+    scanned_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     root = os.path.abspath(args.root)
     os.makedirs(args.out, exist_ok=True)
     module_dir = "" if args.module_dir in ("", ".") else args.module_dir
@@ -326,14 +328,20 @@ def evaluate(args):
     if args.gosec:
         got, (status, reason, files) = parse_gosec(os.path.join(args.out, "gosec.json"), root, module_dir)
         findings += got
-        tools["gosec"] = {"status": status, "reason": reason, "files": files, "version": ver.get("GOSEC_VERSION", ""), "module_dir": args.module_dir}
+        nested = read_text(os.path.join(args.out, "gosec.nested")).split()
+        tools["gosec"] = {"status": status, "reason": reason, "files": files, "version": ver.get("GOSEC_VERSION", ""), "revision": ver.get("GOSEC_REVISION", ""), "module_dir": args.module_dir, "nested_modules_not_scanned": nested}
+        if nested:
+            notes.append(f"gosec did not scan {len(nested)} nested module(s): {', '.join(nested)}. Each needs its own go-ci call with module-dir.")
     else:
         tools["gosec"] = {"status": "disabled", "reason": "", "files": 0}
     if args.opengrep:
-        overrides = load_overrides(os.path.join(args.bundle, "sast/opengrep/upstream.txt"))
-        got, (status, reason, files), partial = parse_opengrep(os.path.join(args.out, "opengrep.json"), root, overrides)
+        got, (status, reason, files), partial = parse_opengrep(os.path.join(args.out, "opengrep.json"), root)
+        digest = rules_digest(args.bundle)
+        if status == "completed" and digest != ver.get("OPENGREP_RULESET_SHA256"):
+            status, reason = "incomplete", f"the rule files have digest {digest}, versions.env says {ver.get('OPENGREP_RULESET_SHA256')}"
         findings += got
-        tools["opengrep"] = {"status": status, "reason": reason, "files": files, "version": ver.get("OPENGREP_VERSION", ""), "rules_commit": ver.get("OPENGREP_RULES_SHA", "")}
+        tools["opengrep"] = {"status": status, "reason": reason, "files": files, "version": ver.get("OPENGREP_VERSION", ""), "revision": ver.get("OPENGREP_REVISION", ""),
+                             "ruleset": {"version": ver.get("OPENGREP_RULESET_VERSION", ""), "sha256": digest, "packs": read_text(os.path.join(args.out, "opengrep.packs")).split()}}
         if partial:
             notes.append(f"opengrep could not fully parse {partial} file(s)")
     else:
@@ -346,16 +354,18 @@ def evaluate(args):
     review_due = sorted(r["fingerprint"] for r in records.values() if (today - datetime.date.fromisoformat(r["reviewed"])).days > REVIEW_DAYS)
     findings.sort(key=lambda f: (not f["blocking"], f["disposition"] != "new", f["tool"], f["rule"], f["path"], f["line"]))
 
-    enabled = [t for t in tools.values() if t["status"] != "disabled"]
+    # A scanner that does not apply is fine only next to one that ran.
+    enabled = [t for t in tools.values() if t["status"] not in ("disabled", "not-applicable")]
     complete = bool(enabled) and all(t["status"] == "completed" for t in enabled) and not config_errors
     blocking = [f for f in findings if f["blocking"]]
     new = [f for f in findings if f["disposition"] == "new"]
     status = {
         "schema": SCHEMA,
+        "repository": args.repository,
         "commit": args.commit,
+        "scanned_at": scanned_at,
         "mode": args.mode,
         "thresholds": {"severity": args.block_severity, "confidence": args.block_confidence},
-        "rules_digest": rules_digest(args.bundle),
         "bundle_ref": args.bundle_ref,
         "scan_status": "completed" if complete else "incomplete",
         "finding_status": "blocked" if blocking else "new" if new else "clean",
@@ -365,17 +375,20 @@ def evaluate(args):
             "blocking": len(blocking),
             "new_in_threshold": len(new),
             "baselined": sum(f["disposition"] == "baseline" for f in findings),
+            "confirmed": sum(f["disposition"] == "confirmed" for f in findings),
+            "probable": sum(f["disposition"] == "probable" for f in findings),
             "false_positive": sum(f["disposition"] == "false-positive" for f in findings),
             "accepted_risk": sum(f["disposition"] == "accepted-risk" for f in findings),
+            "not_applicable": sum(f["disposition"] == "not-applicable" for f in findings),
             "below_threshold": sum(f["disposition"] == "below-threshold" for f in findings),
         },
         "baseline": {"config_errors": config_errors, "expired": [r["fingerprint"] for r in expired], "stale": stale, "review_due": review_due},
         "notes": notes,
     }
-    write_json(os.path.join(args.out, "findings.json"), {"schema": SCHEMA, "commit": args.commit, "findings": findings})
+    write_json(os.path.join(args.out, "findings.json"), {"schema": SCHEMA, "repository": args.repository, "commit": args.commit, "scanned_at": scanned_at, "findings": findings})
     write_json(os.path.join(args.out, "status.json"), status)
     for tool, uri in (("gosec", "https://github.com/securego/gosec"), ("opengrep", "https://github.com/opengrep/opengrep")):
-        if tools[tool]["status"] != "disabled":
+        if tools[tool]["status"] not in ("disabled", "not-applicable"):
             write_json(os.path.join(args.out, f"{tool}.sarif"), sarif(tool, tools[tool]["version"], [f for f in findings if f["tool"] == tool], uri))
     # The raw reports hold source lines. They stay out of the published artifact.
     if not args.keep_raw:
@@ -397,16 +410,18 @@ def evaluate(args):
 def write_summary(path, status, findings):
     c = status["counts"]
     lines = ["## SAST", "", f"Mode **{status['mode']}**, blocks at severity ≥ {status['thresholds']['severity']} and confidence ≥ {status['thresholds']['confidence']}.", ""]
-    lines += [f"**Scan: {status['scan_status']}.** **Findings: {status['finding_status']}.**", ""]
-    lines += ["| Tool | Scan | Files | Note |", "|---|---|---|---|"]
+    lines += [f"**Scan: {status['scan_status']}.** **Findings: {status['finding_status']}.** {cell(status['repository'])} at {cell(status['commit'][:12])}, {status['scanned_at']}.", ""]
+    lines += ["| Tool | Version | Rules | Scan | Files | Note |", "|---|---|---|---|---|---|"]
     for name, t in status["tools"].items():
-        lines.append(f"| {name} | {t['status']} | {t['files']} | {cell(t['reason'])} |")
-    lines += ["", f"{c['total']} findings: {c['blocking']} blocking, {c['new_in_threshold']} new at the threshold, {c['baselined']} baselined, {c['false_positive']} false positives, {c['accepted_risk']} accepted risks, {c['below_threshold']} below the threshold.", ""]
-    top = [f for f in findings if f["in_threshold"] and f["disposition"] in ("new", "baseline")][:25]
+        rs = t.get("ruleset")
+        rules = f"{rs['version']} ({' '.join(rs['packs'])})" if rs else ""
+        lines.append(f"| {name} | {t.get('version', '')} | {cell(rules)} | {t['status']} | {t['files']} | {cell(t['reason'])} |")
+    lines += ["", f"{c['total']} findings: {c['blocking']} blocking, {c['new_in_threshold']} new at the threshold, {c['confirmed'] + c['probable'] + c['baselined']} recorded as debt, {c['false_positive']} false positives, {c['accepted_risk']} accepted risks, {c['not_applicable']} not applicable, {c['below_threshold']} below the threshold.", ""]
+    top = [f for f in findings if f["in_threshold"] and f["disposition"] in ("new",) + DEBT_STATES][:25]
     if top:
-        lines += ["| Tool | Rule | Where | Disposition |", "|---|---|---|---|"]
+        lines += ["| Tool | Rule | Severity / confidence | Where | Disposition |", "|---|---|---|---|---|"]
         for f in top:
-            lines.append(f"| {f['tool']} | {cell(f['rule'])} | {cell(f['path'])}:{f['line']} | {f['disposition']} |")
+            lines.append(f"| {f['tool']} | {cell(f['rule'])} | {cell(f['severity'])} / {cell(f['confidence'])} | {cell(f['path'])}:{f['line']} | {f['disposition']} |")
         lines.append("")
     b = status["baseline"]
     for title, items in (("Invalid baseline", b["config_errors"]), ("Expired records", b["expired"]), ("Records that match nothing", b["stale"]), ("Records due for review", b["review_due"])):
@@ -430,15 +445,12 @@ def load_status(args):
 def check_scan(args):
     s = load_status(args)
     problems = [f"{n}: {t['reason']}" for n, t in s["tools"].items() if t["status"] == "incomplete"] + s["baseline"]["config_errors"]
-    if not any(t["status"] != "disabled" for t in s["tools"].values()):
-        problems.append("no scanner was enabled")
+    if not any(t["status"] not in ("disabled", "not-applicable") for t in s["tools"].values()):
+        problems.append("no scanner ran")
     if s["scan_status"] == "completed":
         print("Scan completed: " + ", ".join(f"{n} {t['files']} files" for n, t in s["tools"].items() if t["status"] == "completed"))
         return 0
     text = annotation_text("; ".join(problems), 600)
-    if s["mode"] == "report":
-        print(f"::warning title=SAST scan incomplete::This commit was NOT fully scanned. {text}")
-        return 0
     print(f"::error title=SAST scan incomplete::This is a scanner failure, not a finding. This commit was NOT fully scanned. {text}")
     return 3
 
@@ -485,6 +497,11 @@ def baseline(args):
     return 0
 
 
+def print_rules_digest(args):
+    print(rules_digest(args.bundle))
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
@@ -500,6 +517,7 @@ def main():
     e.add_argument("--gosec", type=lambda v: v == "true", default=True)
     e.add_argument("--opengrep", type=lambda v: v == "true", default=True)
     e.add_argument("--commit", default="")
+    e.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     e.add_argument("--bundle-ref", default="")
     e.add_argument("--today", default="")
     e.add_argument("--keep-raw", action="store_true")
@@ -512,8 +530,9 @@ def main():
     b.add_argument("--expires", required=True)
     b.add_argument("--ref", required=True)
     b.add_argument("--today", default="")
+    sub.add_parser("rules-digest").add_argument("--bundle", required=True)
     args = p.parse_args()
-    return {"evaluate": evaluate, "check-scan": check_scan, "check-findings": check_findings, "baseline": baseline}[args.command](args)
+    return {"evaluate": evaluate, "check-scan": check_scan, "check-findings": check_findings, "baseline": baseline, "rules-digest": print_rules_digest}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -13,8 +13,11 @@ assert status["scan_status"] == "completed", status
 assert status["tools"]["gosec"]["status"] == "completed", status
 assert status["tools"]["opengrep"]["status"] == "completed", status
 assert status["counts"]["blocking"] == 0, "report mode never blocks"
+assert status["repository"] and status["commit"] and status["scanned_at"], status
+assert status["tools"]["gosec"]["version"] and status["tools"]["gosec"]["revision"], status
+assert status["tools"]["opengrep"]["ruleset"]["version"], status
 seen = {f["rule"] for f in findings}
-for rule in ("G402", "otfabric-wire-length-unchecked-make", "otfabric-shell-world-writable", "run-shell-injection", "detected-private-key"):
+for rule in ("G402", "otfabric-wire-length-unchecked-make", "otfabric-shell-world-writable", "otfabric-gha-untrusted-input-in-script", "otfabric-private-key-in-tree"):
     assert rule in seen, f"{rule} missing"
 for name in ("gosec", "opengrep"):
     sarif = json.load(open(f"{d}/{name}.sarif"))

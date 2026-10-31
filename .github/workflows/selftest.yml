@@ -151,9 +151,13 @@ jobs:
           bash sast/install.sh gosec "$RUNNER_TEMP/tools"
           bash sast/install.sh opengrep "$RUNNER_TEMP/tools"
       - name: Every rule against its fixtures
-        run: scripts/selftest/sast-rules.sh "$RUNNER_TEMP/tools/opengrep" "$RUNNER_TEMP/tools/rules"
+        run: scripts/selftest/sast-rules.sh "$RUNNER_TEMP/tools/opengrep"
       - name: Detection, baseline, enforcement and scanner failures
-        run: scripts/selftest/sast-e2e.sh "$RUNNER_TEMP/tools/gosec" "$RUNNER_TEMP/tools/opengrep" "$RUNNER_TEMP/tools/rules"
+        run: scripts/selftest/sast-e2e.sh "$RUNNER_TEMP/tools/gosec" "$RUNNER_TEMP/tools/opengrep"
+      - name: Failed installs fail, and the workflow keeps secrets and write access away
+        run: |
+          scripts/selftest/sast-install.sh
+          scripts/selftest/sast-static.sh
 
   # The whole reusable workflow, findings reported and the job green.
   sast-workflow:

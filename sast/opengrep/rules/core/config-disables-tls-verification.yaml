@@ -1,0 +1,18 @@
+rules:
+  - id: otfabric-config-disables-tls-verification
+    languages: [yaml]
+    severity: WARNING
+    message: >-
+      This configuration turns off certificate verification. Fine for a
+      throwaway local test network, wrong anywhere else: point it at a CA.
+    metadata:
+      category: security
+      confidence: MEDIUM
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      catalog: tls
+      limitation: Only YAML, only keys named for it, and it cannot tell a test network from production.
+    patterns:
+      - pattern: '$K: true'
+      - metavariable-regex:
+          metavariable: $K
+          regex: '(?i)^(insecure|insecure[_-]?skip[_-]?(tls[_-]?)?verify|skip[_-]?(tls|ssl|cert)[_-]?verify|tls[_-]?insecure)$'
