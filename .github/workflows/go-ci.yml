@@ -126,7 +126,7 @@ on:
         description: "Tag of otfabric/engineering whose otfabric-policy to run."
         required: false
         type: string
-        default: "v1.1.0"
+        default: "v1.2.0"
     secrets:
       OTFABRIC_READ_TOKEN:
         description: >-

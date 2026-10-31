@@ -37,7 +37,7 @@ jobs:
       coverage-mode: atomic
       fuzz-time: 5s
       run-policy: true
-      policy-version: v1.1.0
+      policy-version: v1.2.0
     secrets:
       OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 

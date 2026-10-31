@@ -165,7 +165,7 @@ Each workflow's inputs are fully documented with descriptions inside the YAML fi
 | `coverage-mode` | `atomic` | `go test -covermode`; `atomic` matches runs with `-race` |
 | `fuzz-time` | `""` | Run every discovered Fuzz target this long, e.g. `10s`; empty = no fuzzing |
 | `run-policy` | `true` | Run `otfabric-policy` in its own job when `.otfabric/policy.yaml` exists |
-| `policy-version` | `v1.1.0` | Tag of `otfabric/engineering` whose `otfabric-policy` to run |
+| `policy-version` | `v1.2.0` | Tag of `otfabric/engineering` whose `otfabric-policy` to run |
 | `test-exclude-regex` | `/example(s)?($\|/)` | Packages to skip during testing; `cmd/` is tested |
 | `coverpkg` | `""` | Optional `-coverpkg` list for merged cross-package coverage (Codecov) |
 | `codecov-name` | `""` | Set to enable Codecov upload |
