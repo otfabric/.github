@@ -6,7 +6,7 @@ The organisation's shared GitHub configuration: the reusable workflows `go-ci.ym
 
 ## Organisation standards
 
-This repository follows **otfabric/engineering policy 1.1**, profile **infrastructure** (`.otfabric/policy.yaml`, mode `enforce`). Organisation skills come from the `otfabric` plugin (maintainer's user settings). Local exceptions: `.otfabric/exceptions.yaml` (none today). Where this file and the organisation standards disagree, this file wins for this repository — say so in your report.
+This repository follows **otfabric/engineering policy 1.2**, profile **infrastructure** (`.otfabric/policy.yaml`, mode `enforce`). Organisation skills come from the `otfabric` plugin (maintainer's user settings). Local exceptions: `.otfabric/exceptions.yaml` (none today). Where this file and the organisation standards disagree, this file wins for this repository — say so in your report.
 
 ## Where the truth lives
 
