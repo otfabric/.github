@@ -1,0 +1,23 @@
+rules:
+  - id: otfabric-defer-in-unbounded-loop
+    languages: [go]
+    severity: ERROR
+    message: >-
+      A defer in a loop that never returns runs only at function exit, so
+      connections, files or locks pile up in a long-lived service. Move the
+      body into a function, or release explicitly.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-772: Missing Release of Resource after Effective Lifetime"]
+      catalog: resource-safety
+    patterns:
+      - pattern-inside: |
+          for {
+            ...
+          }
+      - pattern: defer $F(...)
+      - pattern-not-inside: |
+          func(...) { ... }(...)
+      - pattern-not-inside: |
+          go func(...) { ... }(...)

@@ -1,0 +1,27 @@
+rules:
+  - id: otfabric-wire-length-unchecked-make
+    languages: [go]
+    severity: ERROR
+    message: >-
+      An allocation is sized directly by a 32- or 64-bit integer decoded from
+      bytes, so a short message can demand gigabytes. Check it against a limit
+      first (standards/security.md, "Input limits").
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-789: Memory Allocation with Excessive Size Value"]
+      catalog: parser
+      limitation: >-
+        Finds the decoded value used in the make call itself. It cannot tell
+        whether a buffer is bounded when the length travels through a variable,
+        a field, a helper or binary.Read: fuzz targets and limit tests stay the
+        evidence for that, a clean scan is none.
+    pattern-either:
+      - pattern: 'make($T, binary.$O.Uint32(...))'
+      - pattern: 'make($T, binary.$O.Uint64(...))'
+      - pattern: 'make($T, int(binary.$O.Uint32(...)))'
+      - pattern: 'make($T, int(binary.$O.Uint64(...)))'
+      - pattern: 'make($T, $N, binary.$O.Uint32(...))'
+      - pattern: 'make($T, $N, binary.$O.Uint64(...))'
+      - pattern: 'make($T, $N, int(binary.$O.Uint32(...)))'
+      - pattern: 'make($T, $N, int(binary.$O.Uint64(...)))'
