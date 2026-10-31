@@ -3,6 +3,9 @@
 # The go-ci job calls the workflow by local path, so a pull request tests its
 # own version. A job that calls a reusable workflow cannot continue on error,
 # so failing cases run the exact step scripts, extracted from the workflows.
+#
+# The policy job checks the repository root, and this repository has a
+# .otfabric/policy.yaml, so a job that leaves run-policy on needs the token.
 name: Selftest
 on:
   pull_request:
@@ -35,6 +38,8 @@ jobs:
       fuzz-time: 5s
       run-policy: true
       policy-version: v1.1.0
+    secrets:
+      OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 
   # The v3 defaults: govulncheck on, cmd/ tested, atomic coverage.
   go-ci-defaults:
@@ -43,6 +48,8 @@ jobs:
       module-dir: testdata/go-ci/lowcov
       go-versions: '["1.23"]'
       run-codecov: false
+    secrets:
+      OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 
   # The input turns the job off. Its own module-dir: go-ci's concurrency group
   # is per module-dir, so two calls on one fixture cancel each other.
