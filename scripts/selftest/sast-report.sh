@@ -17,7 +17,7 @@ assert status["repository"] and status["commit"] and status["scanned_at"], statu
 assert status["tools"]["gosec"]["version"] and status["tools"]["gosec"]["revision"], status
 assert status["tools"]["opengrep"]["ruleset"]["version"], status
 seen = {f["rule"] for f in findings}
-for rule in ("G402", "otfabric-wire-length-unchecked-make", "otfabric-shell-world-writable", "otfabric-gha-untrusted-input-in-script", "otfabric-private-key-in-tree"):
+for rule in ("G402", "otfabric-secret-in-log", "otfabric-shell-world-writable", "otfabric-gha-untrusted-input-in-script", "otfabric-private-key-in-tree"):
     assert rule in seen, f"{rule} missing"
 for name in ("gosec", "opengrep"):
     sarif = json.load(open(f"{d}/{name}.sarif"))

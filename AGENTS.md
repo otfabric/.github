@@ -35,7 +35,7 @@ This repository follows **otfabric/engineering policy 1.2**, profile **infrastru
 | anything | `go run ./cmd/otfabric-policy check <this repository>` from otfabric/engineering |
 | `go-ci.yml` policy steps | `scripts/selftest/policy.sh` |
 | release notes extraction | `scripts/selftest/release-notes.sh` |
-| `sast/` | `scripts/selftest/sast.sh`; with the scanners `sast-rules.sh` and `sast-e2e.sh` |
+| `sast/` | `scripts/selftest/sast.sh` and `sast-static.sh`; with the scanners `sast-rules.sh` and `sast-e2e.sh`; a rule change also bumps the rule set version and digest in `sast/versions.env` |
 | a workflow | the Selftest workflow, on the pull request |
 
 There is no Makefile.
