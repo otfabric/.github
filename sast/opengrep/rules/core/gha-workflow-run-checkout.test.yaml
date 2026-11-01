@@ -1,0 +1,17 @@
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+jobs:
+  vulnerable:
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # ruleid: otfabric-gha-workflow-run-checkout
+          ref: ${{ github.event.workflow_run.head_sha }}
+  safe:
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # ok: otfabric-gha-workflow-run-checkout
+          ref: main

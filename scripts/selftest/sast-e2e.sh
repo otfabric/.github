@@ -69,7 +69,8 @@ status = json.load(open(f"{d}/status.json"))
 seen = {f["rule"] for f in findings}
 for rule in ("otfabric-gha-untrusted-input-in-script", "otfabric-shell-pipe-to-interpreter", "otfabric-shell-disables-tls-verification",
              "otfabric-shell-world-writable", "otfabric-python-shell-dynamic", "otfabric-python-tls-verification-disabled",
-             "otfabric-private-key-in-tree", "otfabric-js-command-dynamic", "otfabric-js-tls-verification-disabled"):
+             "otfabric-private-key-in-tree", "otfabric-js-command-dynamic", "otfabric-js-tls-verification-disabled",
+             "otfabric-github-token-in-tree", "otfabric-aws-credential-in-tree", "otfabric-gha-workflow-run-checkout"):
     assert rule in seen, f"{rule} missing: {sorted(seen)}"
 assert status["tools"]["gosec"]["status"] == "not-applicable", status
 assert status["scan_status"] == "completed", "no Go is not a failure when Opengrep ran"
