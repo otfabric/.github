@@ -133,6 +133,8 @@ Written here, one file per rule, with a vulnerable and a safe fixture beside it 
 | `otfabric-config-disables-tls-verification` | YAML configuration | medium, medium | Keys named for it; cannot tell a test network from production |
 | `otfabric-secret-in-log` | Secrets in logs | high, high | Goes by the name of the value, not its content |
 | `otfabric-private-key-in-tree` | Secrets | high, high | PEM blocks with a body |
+| `otfabric-github-token-in-tree` | Secrets | high, high | Current token formats, in any file; does not check that a token is live |
+| `otfabric-aws-credential-in-tree` | Secrets | high, high | Key ids in any file; secret keys only beside a name like `aws_secret_access_key`; AWS's documented examples are skipped |
 | `otfabric-go-auth-none-accepted` | Authentication shortcut | high, high | golang-jwt names |
 | `otfabric-go-secret-compare-not-constant-time` | Authentication | medium, medium | Goes by the name of the value |
 | `otfabric-exec-shell-dynamic` | Go commands | high, high | Direct `sh -c` calls; a wrapper function is not seen |
@@ -143,6 +145,7 @@ Written here, one file per rule, with a vulnerable and a safe fixture beside it 
 | `otfabric-shell-world-writable` | File permissions | high, high | Literal modes in shell; Gosec covers Go |
 | `otfabric-gha-untrusted-input-in-script` | Workflows | high, high | The usual attacker-controlled contexts |
 | `otfabric-gha-pull-request-target-checkout` | Workflows | high, high | Refs that name the pull request head |
+| `otfabric-gha-workflow-run-checkout` | Workflows | high, high | Refs that name the triggering run's head |
 | `otfabric-gha-unsecure-commands` | Workflows | high, high | The variable written as true |
 
 **Pack `protocol`**
@@ -162,7 +165,7 @@ Written here, one file per rule, with a vulnerable and a safe fixture beside it 
 |---|---|---|
 | Gosec | `v2.30.0`, commit `5eb1d104` | Latest release of securego/gosec, Apache-2.0. `h1:67aF6LHa7SAL6QEc4es857GrXTT50gUqmrl0XPhtDx0=` from sum.golang.org, which `go install` checks. Built with the runner's Go so it reads what that toolchain produces |
 | Opengrep | `v1.33.1`, commit `092c80fa` | Latest release of opengrep/opengrep, LGPL-2.1. The release's Sigstore signature of `opengrep_manylinux_x86` checked once with `cosign verify-blob`; its SHA-256 in `versions.env` is checked on every install |
-| Rule set | `1.0.0` | Files in this directory, SHA-256 digest in `versions.env` |
+| Rule set | `1.1.0` | Files in this directory, SHA-256 digest in `versions.env` |
 
 `bundle-ref` selects all of this together, so a change reaches a repository only with a workflow release it moves to.
 

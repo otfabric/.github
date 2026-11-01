@@ -1,0 +1,32 @@
+rules:
+  - id: otfabric-gha-workflow-run-checkout
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      workflow_run runs with the repository's secrets and a write token, and
+      this checks out the code that triggered it, which a fork can control.
+      Anything that code runs gets those. Do not check out that ref, or handle
+      its output as data only.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-829: Inclusion of Functionality from Untrusted Control Sphere"]
+      catalog: github-actions
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              on: workflow_run
+              ...
+          - pattern-inside: |
+              on: [..., workflow_run, ...]
+              ...
+          - pattern-inside: |
+              on:
+                ...
+                workflow_run: ...
+                ...
+              ...
+      - pattern: 'ref: $R'
+      - metavariable-regex:
+          metavariable: $R
+          regex: '.*github\.event\.workflow_run\.(head_sha|head_branch|head_commit\.id|pull_requests).*'

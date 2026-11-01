@@ -1,0 +1,14 @@
+rules:
+  - id: otfabric-github-token-in-tree
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      A GitHub token is committed. Anyone who can read the repository can act
+      with its permissions until it is revoked, and removing it from the tree
+      does not remove it from history. Revoke it, then read it from a secret.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-798: Use of Hard-coded Credentials"]
+      catalog: secrets
+    pattern-regex: '\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b'
