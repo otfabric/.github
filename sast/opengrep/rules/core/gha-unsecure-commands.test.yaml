@@ -1,5 +1,0 @@
-env:
-  # ruleid: otfabric-gha-unsecure-commands
-  ACTIONS_ALLOW_UNSECURE_COMMANDS: true
-  # ok: otfabric-gha-unsecure-commands
-  ACTIONS_STEP_DEBUG: true

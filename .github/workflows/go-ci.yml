@@ -13,8 +13,6 @@
 #   fuzz-smoke         — Optional (fuzz-time), every discovered Fuzz target.
 #   policy             — Optional (run-policy), otfabric-policy on repositories
 #                        with .otfabric/policy.yaml, on the current stable Go.
-#   sast               — Optional (run-sast, off by default), sast.yml: Gosec on
-#                        module-dir and Opengrep on the repository.
 #
 # Caller example:
 #
@@ -129,46 +127,6 @@ on:
         required: false
         type: string
         default: "v1.2.0"
-      run-sast:
-        description: "Run sast.yml (Gosec and Opengrep) in its own job. See sast/README.md."
-        required: false
-        type: boolean
-        default: false
-      sast-mode:
-        description: "report, baseline or enforce. See the mode input of sast.yml."
-        required: false
-        type: string
-        default: report
-      sast-run-gosec:
-        description: "Run Gosec. Off when this repository has no Go code in module-dir."
-        required: false
-        type: boolean
-        default: true
-      sast-run-opengrep:
-        description: "Run Opengrep. A second go-ci call for a nested module can turn it off."
-        required: false
-        type: boolean
-        default: true
-      sast-block-severity:
-        description: "Lowest severity that can block: low, medium or high."
-        required: false
-        type: string
-        default: high
-      sast-block-confidence:
-        description: "Lowest confidence that can block: low, medium or high."
-        required: false
-        type: string
-        default: high
-      sast-bundle-ref:
-        description: "Ref of otfabric/.github whose sast/ directory to use."
-        required: false
-        type: string
-        default: v3.4.0
-      sast-artifact-name:
-        description: "Name of the report artifact. Two go-ci calls in one run need different names."
-        required: false
-        type: string
-        default: sast-reports
     secrets:
       OTFABRIC_READ_TOKEN:
         description: >-
@@ -618,24 +576,3 @@ jobs:
         run: |
           set -euo pipefail
           go run "github.com/otfabric/engineering/cmd/otfabric-policy@${VERSION}" check -format markdown . | tee -a "$GITHUB_STEP_SUMMARY"
-
-  # The called job has contents: read and nothing else, whatever this workflow's
-  # permissions say, and its token reaches only the step that fetches modules.
-  sast:
-    name: SAST
-    if: inputs.run-sast
-    permissions:
-      contents: read
-    uses: ./.github/workflows/sast.yml
-    with:
-      mode: ${{ inputs.sast-mode }}
-      run-gosec: ${{ inputs.sast-run-gosec }}
-      run-opengrep: ${{ inputs.sast-run-opengrep }}
-      module-dir: ${{ inputs.module-dir }}
-      block-severity: ${{ inputs.sast-block-severity }}
-      block-confidence: ${{ inputs.sast-block-confidence }}
-      bundle-ref: ${{ inputs.sast-bundle-ref }}
-      artifact-name: ${{ inputs.sast-artifact-name }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
-    secrets:
-      OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}

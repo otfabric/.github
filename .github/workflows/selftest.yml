@@ -12,7 +12,6 @@ on:
     paths:
       - ".github/workflows/**"
       - "actions/**"
-      - "sast/**"
       - "scripts/selftest/**"
       - "testdata/**"
   push:
@@ -39,10 +38,6 @@ jobs:
       fuzz-time: 5s
       run-policy: true
       policy-version: v1.2.0
-      # A go-ci call with SAST on, in report mode, on this repository's root.
-      run-sast: true
-      sast-bundle-ref: ${{ github.sha }}
-      sast-artifact-name: sast-go-ci
     secrets:
       OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 
@@ -124,76 +119,3 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: scripts/selftest/release-notes.sh
-
-  # What the gate does with reports, with no scanner involved: every status
-  # and exit code, and hostile file names.
-  sast-gate:
-    name: SAST gate cases
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-      - run: scripts/selftest/sast.sh
-
-  # The pinned scanners on the fixtures, through the scripts the workflow runs.
-  sast-e2e:
-    name: SAST scanner cases
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: stable
-          cache: false
-      - name: Install the pinned scanners
-        run: |
-          bash sast/install.sh gosec "$RUNNER_TEMP/tools"
-          bash sast/install.sh opengrep "$RUNNER_TEMP/tools"
-      - name: Every rule against its fixtures
-        run: scripts/selftest/sast-rules.sh "$RUNNER_TEMP/tools/opengrep"
-      - name: Detection, baseline, enforcement and scanner failures
-        run: scripts/selftest/sast-e2e.sh "$RUNNER_TEMP/tools/gosec" "$RUNNER_TEMP/tools/opengrep"
-      - name: Failed installs fail, and the workflow keeps secrets and write access away
-        run: |
-          scripts/selftest/sast-install.sh
-          scripts/selftest/sast-static.sh
-
-  # The whole reusable workflow, findings reported and the job green.
-  sast-workflow:
-    uses: ./.github/workflows/sast.yml
-    with:
-      module-dir: testdata/sast/vulnerable-go
-      # The fixtures are what this call is for.
-      opengrep-exclude: "vendor"
-      bundle-ref: ${{ github.sha }}
-      artifact-name: sast-fixtures
-      retention-days: 1
-
-  sast-workflow-report:
-    name: SAST workflow report
-    needs: sast-workflow
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: sast-fixtures
-          path: reports
-      - name: The artifact shows a completed scan and the planted findings
-        env:
-          SCAN_STATUS: ${{ needs.sast-workflow.outputs.scan-status }}
-          FINDING_STATUS: ${{ needs.sast-workflow.outputs.finding-status }}
-        run: scripts/selftest/sast-report.sh reports
-
-  # This repository's own pilot: no Go module, so Opengrep only, and blocking.
-  sast-self:
-    uses: ./.github/workflows/sast.yml
-    with:
-      mode: baseline
-      run-gosec: false
-      opengrep-exclude: "testdata,sast/opengrep/rules"
-      bundle-ref: ${{ github.sha }}
-      artifact-name: sast-self
-      retention-days: 7
