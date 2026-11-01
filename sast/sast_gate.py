@@ -91,9 +91,16 @@ def parse_gosec(path, root, module_dir):
     if not isinstance(data, dict) or not isinstance(data.get("Stats"), dict) or not isinstance(data.get("Issues"), list):
         return [], ("incomplete", "gosec report has an unknown shape", 0)
     findings = []
+    seen = set()
     for i in data["Issues"]:
         line = int(str(i.get("line", "0")).split("-")[0] or 0)
         rel = relative(root, i.get("file", ""), "")
+        # A package with tests is analysed twice, on its own and as its test
+        # variant, and gosec reports the same line from both.
+        key = (i.get("rule_id"), rel, line)
+        if key in seen:
+            continue
+        seen.add(key)
         findings.append({
             "tool": "gosec",
             "rule": i.get("rule_id", "?"),

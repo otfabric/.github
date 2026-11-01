@@ -47,6 +47,11 @@ evaluate report > /dev/null; expect "report" 0 check-findings; expect "report sc
 evaluate baseline > /dev/null; expect "baseline" 1 check-findings
 evaluate enforce > /dev/null; expect "enforce" 1 check-findings
 
+# A package and its test variant report one line twice: one finding.
+report 0 "[$(issue HIGH HIGH),$(issue HIGH HIGH)]"
+evaluate report > /dev/null
+[ "$(status "['counts']['total']")" = 1 ] || fail "the same line twice is one finding"
+
 # Thresholds: confidence and severity both have to reach them.
 report 0 "[$(issue HIGH MEDIUM),$(issue MEDIUM HIGH)]"
 evaluate enforce > /dev/null; expect "below the thresholds" 0 check-findings
