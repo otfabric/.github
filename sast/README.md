@@ -109,6 +109,12 @@ All rules run, on the packages of `module-dir`. `go list` keeps nested modules, 
 | G101 | Hardcoded credentials | Medium: low confidence, so it reports without blocking |
 | G301, G302, G306 | File permissions | Report only in libraries |
 
+**Taint rules can flicker.** Gosec's taint rules (G701 to G710, G120) follow data through its callers in an order that changes between runs, so on unchanged code a finding can appear on some runs and not others ([gosec#1814](https://github.com/securego/gosec/issues/1814)). The cause is in Gosec, and `-concurrency 1` does not help. On the pilots it was rare: one finding of about 650, below the threshold, in half of its runs.
+
+- A clean taint result does not prove a path is absent.
+- A taint finding that fails a pull request which did not touch that code may be old, not caused by the pull request. Check whether the path exists, then fix or record it. Do not re-run until it passes.
+- A recorded finding passes whether it appears or not, so its record can sometimes be listed as matching nothing. Check that it has been absent over several runs before removing it.
+
 ### Opengrep rule set (`opengrep/rules/`)
 
 Written here, one file per rule, with a vulnerable and a safe fixture beside it (`opengrep test`, in the selftest). It is under this repository's licence. Each change bumps `OPENGREP_RULESET_VERSION`, adds to [`opengrep/CHANGELOG.md`](opengrep/CHANGELOG.md) and updates the digest in `versions.env`; a scan whose rule files do not match the digest is not completed. CI downloads no rules.
