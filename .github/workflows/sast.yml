@@ -4,7 +4,7 @@
 #
 # Gosec on the Go module in module-dir and Opengrep on the repository, with the
 # pinned scanners and the versioned rules of sast/ at bundle-ref. Called from
-# go-ci.yml (run-sast) or directly by a repository without Go. How to adopt it,
+# a repository's own manual workflow, or from go-ci.yml (run-sast). How to adopt it,
 # the rule catalog and the baseline: sast/README.md.
 #
 # The job has contents: read only. Scanners run with no secret in reach: the
@@ -76,7 +76,7 @@ on:
           change reaches a repository with a new workflow release.
         required: false
         type: string
-        default: v3.4.0
+        default: v3.5.0
       artifact-name:
         description: "Name of the report artifact. Calls in one run need different names."
         required: false

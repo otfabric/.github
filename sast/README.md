@@ -4,17 +4,38 @@ Gosec, Opengrep, the rule set and the gate used by [`sast.yml`](../.github/workf
 
 ## Turning it on
 
+A repository runs the scan in its own workflow, `.github/workflows/sast.yml`, separate from CI and started by hand:
+
 ```yaml
+name: SAST
+run-name: "SAST (${{ inputs.mode }}) on ${{ github.ref_name }} by @${{ github.actor }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "report: findings never fail the run. baseline and enforce: see sast/README.md."
+        type: choice
+        options: [report, baseline, enforce]
+        default: report
+
+permissions:
+  contents: read
+
 jobs:
-  ci:
-    uses: otfabric/.github/.github/workflows/go-ci.yml@v3
+  sast:
+    uses: otfabric/.github/.github/workflows/sast.yml@v3
     with:
-      run-sast: true
-      sast-mode: report
-    secrets: inherit
+      mode: ${{ inputs.mode }}
+    secrets:
+      OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 ```
 
-A repository with no Go module calls `sast.yml` with `run-gosec: false`. A second `go-ci` call for a nested module sets `sast-run-opengrep: false` and its own `sast-artifact-name`.
+GitHub only offers a manual workflow once the file is on the default branch. After that, start it from the Actions tab or with `gh workflow run sast.yml`, on any branch that has the file.
+
+To make it part of CI later, add triggers to this workflow, or use `run-sast: true` and `sast-mode` on `go-ci.yml` instead of this file.
+
+A repository with no Go module adds `run-gosec: false`. A nested module needs a second call with `module-dir`, `run-opengrep: false` and its own `artifact-name`.
 
 | `mode` | Findings | Scan that did not complete |
 |---|---|---|
@@ -30,6 +51,8 @@ The modes mean what they mean in `.otfabric/policy.yaml`. A finding can block wh
 |---|---|---|
 | Scan completed | exit 3, in every mode | The scan cannot be trusted: a scanner failed, a file did not type-check, a rule did not load or timed out, rule files are missing or changed, nothing was scanned, the baseline is invalid |
 | No blocking findings | exit 1 | The scan is fine and found something new |
+
+The results stay with the finished run. Its summary page lists every finding, including those below the threshold and those already recorded, each linked to its line in the scanned commit. If a very large report does not fit there, it says so.
 
 The artifact (`sast-reports`, 30 days) holds `status.json`, `findings.json`, one SARIF file per scanner and `summary.md`. `status.json` records the repository, commit, scan time, each scanner's version, revision and status, and the rule set's version, digest and packs. Each finding in `findings.json` has its fingerprint, rule, severity, confidence, location and `disposition`, the state of its record. Only a `status.json` with `scan_status: completed` for this `commit` shows that a commit was scanned. A skipped job has no artifact and no `scan-status` output. If the module has private dependencies, a fork pull request has no token to fetch them, so its scan fails like its test jobs do. Reports hold no source lines, so a finding of a secret does not copy the secret.
 

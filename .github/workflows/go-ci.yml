@@ -163,7 +163,7 @@ on:
         description: "Ref of otfabric/.github whose sast/ directory to use."
         required: false
         type: string
-        default: v3.4.0
+        default: v3.5.0
       sast-artifact-name:
         description: "Name of the report artifact. Two go-ci calls in one run need different names."
         required: false

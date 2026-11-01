@@ -174,7 +174,7 @@ Each workflow's inputs are fully documented with descriptions inside the YAML fi
 | `sast-mode` | `report` | `report`, `baseline` or `enforce` |
 | `sast-run-gosec`, `sast-run-opengrep` | `true` | Which scanners run |
 | `sast-block-severity`, `sast-block-confidence` | `high` | Lowest level that can block |
-| `sast-bundle-ref` | `v3.4.0` | Ref of this repository whose `sast/` directory to use |
+| `sast-bundle-ref` | `v3.5.0` | Ref of this repository whose `sast/` directory to use |
 | `sast-artifact-name` | `sast-reports` | Report artifact; two calls in one run need different names |
 | `test-exclude-regex` | `/example(s)?($\|/)` | Packages to skip during testing; `cmd/` is tested |
 | `coverpkg` | `""` | Optional `-coverpkg` list for merged cross-package coverage (Codecov) |

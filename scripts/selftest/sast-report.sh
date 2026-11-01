@@ -22,6 +22,11 @@ for rule in ("G402", "otfabric-secret-in-log", "otfabric-shell-world-writable", 
 for name in ("gosec", "opengrep"):
     sarif = json.load(open(f"{d}/{name}.sarif"))
     assert sarif["version"] == "2.1.0" and sarif["runs"][0]["results"], name
+summary = open(f"{d}/summary.md").read()
+assert f"All {len(findings)} findings" in summary, "the summary lists every finding"
+for f in findings:
+    assert f"/blob/{status['commit']}/" in summary and f["rule"].replace("_", "\\_") in summary, f"{f['rule']} missing from the summary"
+assert summary.count(f"/blob/{status['commit']}/") >= len(findings), "every finding links to its line"
 text = open(f"{d}/findings.json").read()
 assert "not-a-key-only" not in text and "InsecureSkipVerify: true" not in text, "reports carry no source"
 PY

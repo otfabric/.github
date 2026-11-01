@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 
 SCHEMA = 1
 LEVELS = {"low": 0, "medium": 1, "high": 2}
@@ -31,6 +32,7 @@ REVIEW_DAYS = 183  # docs/exceptions: reviewed date + 6 months
 # Types of opengrep error that mean a rule did not finish on a file. Partial
 # parsing is expected in workflow templates and only noted.
 OPENGREP_INCOMPLETE_TYPES = ("Timeout", "OutOfMemory", "StackOverflow", "Fatal error", "Rule parse error", "Invalid rule schema")
+SUMMARY_ROWS_BYTES = 900_000
 RECORD_FIELDS = {"fingerprint", "tool", "rule", "path", "state", "justification", "owner", "reviewed", "expires", "reconsider", "ref"}
 
 
@@ -430,6 +432,7 @@ def write_summary(path, status, findings):
         for f in top:
             lines.append(f"| {f['tool']} | {cell(f['rule'])} | {cell(f['severity'])} / {cell(f['confidence'])} | {cell(f['path'])}:{f['line']} | {f['disposition']} |")
         lines.append("")
+    lines += all_findings(status, findings)
     b = status["baseline"]
     for title, items in (("Invalid baseline", b["config_errors"]), ("Expired records", b["expired"]), ("Records that match nothing", b["stale"]), ("Records due for review", b["review_due"])):
         if items:
@@ -439,6 +442,33 @@ def write_summary(path, status, findings):
         lines += [cell(note), ""]
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+
+
+def where(status, f):
+    """The location of a finding, linked to the scanned commit."""
+    text = f"{cell(f['path'])}:{f['line']}"
+    if not status["repository"] or not status["commit"]:
+        return text
+    return f"[{text}](https://github.com/{status['repository']}/blob/{status['commit']}/{urllib.parse.quote(f['path'])}#L{f['line']})"
+
+
+def all_findings(status, findings):
+    """Every finding, so a run can be evaluated from its page. A step summary holds 1 MiB."""
+    if not findings:
+        return []
+    rows, size = [], 0
+    for f in findings:
+        row = f"| {f['tool']} | {cell(f['rule'])} | {cell(f['severity'])} / {cell(f['confidence'])} | {where(status, f)} | {f['disposition']} | {cell(f['message'])} |"
+        size += len(row.encode("utf-8")) + 1
+        if size > SUMMARY_ROWS_BYTES:
+            break
+        rows.append(row)
+    lines = [f"<details><summary>All {len(findings)} findings</summary>", "",
+             "| Tool | Rule | Severity / confidence | Where | Disposition | Message |", "|---|---|---|---|---|---|"]
+    lines += rows + ["", "</details>", ""]
+    if len(rows) < len(findings):
+        lines += [f"**Only the first {len(rows)} of {len(findings)} findings fit here. `findings.json` in the artifact has them all.**", ""]
+    return lines
 
 
 def load_status(args):
