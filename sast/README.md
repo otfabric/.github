@@ -18,6 +18,16 @@ on:
         type: choice
         options: [report, baseline, enforce]
         default: report
+      block-severity:
+        description: "Lowest severity that can fail the run."
+        type: choice
+        options: [high, medium, low]
+        default: high
+      block-confidence:
+        description: "Lowest confidence that can fail the run."
+        type: choice
+        options: [high, medium, low]
+        default: high
 
 permissions:
   contents: read
@@ -27,9 +37,13 @@ jobs:
     uses: otfabric/.github/.github/workflows/sast.yml@v3.5.0
     with:
       mode: ${{ inputs.mode }}
+      block-severity: ${{ inputs.block-severity }}
+      block-confidence: ${{ inputs.block-confidence }}
     secrets:
       OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
 ```
+
+To choose what fails a run, pick a mode and thresholds when you start it. A finding counts only when its severity and its confidence both reach the thresholds, so `medium` and `high` means at least medium severity and high confidence. `report` shows those findings but never fails on them; use `baseline` or `enforce` to fail. A scan that did not complete always fails.
 
 GitHub only offers a manual workflow once the file is on the default branch. After that, start it from the Actions tab or with `gh workflow run sast.yml`, on any branch that has the file.
 
