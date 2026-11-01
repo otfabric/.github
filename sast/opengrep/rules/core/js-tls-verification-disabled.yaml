@@ -1,0 +1,17 @@
+rules:
+  - id: otfabric-js-tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      This talks TLS with certificate verification off, so anyone on the path
+      can read and change the traffic. Configure the CA instead.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      catalog: tls
+    pattern-either:
+      - pattern: 'new https.Agent({..., rejectUnauthorized: false, ...})'
+      - pattern: 'tls.connect({..., rejectUnauthorized: false, ...}, ...)'
+      - pattern: 'https.request({..., rejectUnauthorized: false, ...}, ...)'
+      - pattern: 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"'

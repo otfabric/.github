@@ -1,0 +1,30 @@
+rules:
+  - id: otfabric-http-body-unbounded-read
+    languages: [go]
+    severity: ERROR
+    message: >-
+      A handler reads a whole request body with no limit, so any client can
+      exhaust memory. Wrap it in http.MaxBytesReader first.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-770: Allocation of Resources Without Limits or Throttling"]
+      catalog: http
+      limitation: >-
+        Sees the handler that reads the body itself. A limit set by a wrapping
+        handler or middleware is invisible, which is a false positive to record
+        in the baseline. A body passed to a helper before reading is not found.
+    patterns:
+      - pattern-either:
+          - pattern: 'io.ReadAll($R.Body)'
+          - pattern: 'ioutil.ReadAll($R.Body)'
+          - pattern: 'json.NewDecoder($R.Body).Decode(...)'
+          - pattern: 'xml.NewDecoder($R.Body).Decode(...)'
+      - pattern-inside: |
+          func $F(..., $R *http.Request, ...) { ... }
+      - pattern-not-inside: |
+          func $F(..., $R *http.Request, ...) {
+            ...
+            $R.Body = http.MaxBytesReader(...)
+            ...
+          }

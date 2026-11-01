@@ -2,7 +2,7 @@
 
 ## What this is
 
-The organisation's shared GitHub configuration: the reusable workflows `go-ci.yml`, `go-package-release.yml` and `go-binary-release.yml`, the composite actions for the `*-interop` repositories, the organisation profile page, and the selftest of the workflows. There is no product and no Go module of its own; the Go code under `testdata/` is fixtures. Every OT Fabric repository depends on this one, so a mistake here reaches all of them. Profile: **infrastructure**.
+The organisation's shared GitHub configuration: the reusable workflows `go-ci.yml`, `go-package-release.yml` and `go-binary-release.yml`, the composite actions for the `*-interop` repositories, the SAST bundle (`sast.yml`, `sast/`), the organisation profile page, and the selftest of the workflows. There is no product and no Go module of its own; the Go code under `testdata/` is fixtures. Every OT Fabric repository depends on this one, so a mistake here reaches all of them. Profile: **infrastructure**.
 
 ## Organisation standards
 
@@ -16,6 +16,7 @@ This repository follows **otfabric/engineering policy 1.2**, profile **infrastru
 | The composite actions | `actions/README.md` |
 | What the workflows are tested against | `.github/workflows/selftest.yml`, `testdata/`, `scripts/selftest/` |
 | Why the selftest exists | ADR-0008 in otfabric/engineering |
+| SAST: modes, baseline, rule catalog, pins | `sast/README.md` |
 | The organisation profile page | `profile/README.md` |
 
 ## Hard rules
@@ -34,6 +35,7 @@ This repository follows **otfabric/engineering policy 1.2**, profile **infrastru
 | anything | `go run ./cmd/otfabric-policy check <this repository>` from otfabric/engineering |
 | `go-ci.yml` policy steps | `scripts/selftest/policy.sh` |
 | release notes extraction | `scripts/selftest/release-notes.sh` |
+| `sast/` | `scripts/selftest/sast.sh` and `sast-static.sh`; with the scanners `sast-rules.sh` and `sast-e2e.sh`; a rule change also bumps the rule set version and digest in `sast/versions.env` |
 | a workflow | the Selftest workflow, on the pull request |
 
 There is no Makefile.

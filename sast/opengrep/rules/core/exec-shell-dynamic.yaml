@@ -1,0 +1,22 @@
+rules:
+  - id: otfabric-exec-shell-dynamic
+    languages: [go]
+    severity: ERROR
+    message: >-
+      A shell runs a command line built at run time. A device name, address or
+      file name from the network or a file becomes a command. Run the program
+      directly with an argument list.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command"]
+      catalog: command-injection
+    patterns:
+      - pattern-either:
+          - pattern: 'exec.Command($SH, "-c", $X, ...)'
+          - pattern: 'exec.CommandContext($CTX, $SH, "-c", $X, ...)'
+      - metavariable-regex:
+          metavariable: $SH
+          regex: '^"(/bin/|/usr/bin/)?(sh|bash|dash|zsh|ksh)"$'
+      - pattern-not: 'exec.Command($SH, "-c", "...", ...)'
+      - pattern-not: 'exec.CommandContext($CTX, $SH, "-c", "...", ...)'

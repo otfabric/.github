@@ -1,0 +1,17 @@
+rules:
+  - id: otfabric-python-tls-verification-disabled
+    languages: [python]
+    severity: ERROR
+    message: >-
+      This talks TLS with certificate verification off, so anyone on the path
+      can read and change the traffic. Pass a CA bundle instead.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      catalog: tls
+    pattern-either:
+      - pattern: requests.$F(..., verify=False, ...)
+      - pattern: httpx.$F(..., verify=False, ...)
+      - pattern: ssl._create_unverified_context(...)
+      - pattern: $C.verify_mode = ssl.CERT_NONE

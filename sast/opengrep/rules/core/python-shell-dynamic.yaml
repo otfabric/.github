@@ -1,0 +1,18 @@
+rules:
+  - id: otfabric-python-shell-dynamic
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A shell runs a command line that is not a constant, so its content becomes
+      commands. Pass a list and drop shell=True.
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command"]
+      catalog: command-injection
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.$F($CMD, ..., shell=True, ...)
+          - pattern: os.system($CMD)
+      - pattern-not: subprocess.$F("...", ..., shell=True, ...)
+      - pattern-not: os.system("...")

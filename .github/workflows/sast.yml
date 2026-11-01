@@ -1,0 +1,242 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# SAST — Reusable Workflow
+#
+# Gosec on the Go module in module-dir and Opengrep on the repository, with the
+# pinned scanners and the versioned rules of sast/ at bundle-ref. Called from
+# go-ci.yml (run-sast) or directly by a repository without Go. How to adopt it,
+# the rule catalog and the baseline: sast/README.md.
+#
+# The job has contents: read only. Scanners run with no secret in reach: the
+# optional token fetches dependencies in one step, through the environment of
+# that one command, and nothing the checkout holds runs (no build, no tests).
+#
+# A scan that did not complete and a finding are different failures: the steps
+# "Scan completed" (exit 3, in every mode) and "No blocking findings" (exit 1).
+#
+# Caller example:
+#
+#   jobs:
+#     sast:
+#       uses: otfabric/.github/.github/workflows/sast.yml@v3
+#       with:
+#         run-gosec: false
+#         mode: report
+
+name: SAST
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: >-
+          report: findings never fail the job. In every mode, a scan that did
+          not complete does.
+          baseline: fails on findings at the thresholds with no valid record in
+          .otfabric/sast-baseline.json. enforce: as baseline, but records in
+          state baseline no longer count. Same meaning as mode in
+          .otfabric/policy.yaml.
+        required: false
+        type: string
+        default: report
+      run-gosec:
+        description: "Run Gosec on module-dir."
+        required: false
+        type: boolean
+        default: true
+      run-opengrep:
+        description: "Run Opengrep on the repository root."
+        required: false
+        type: boolean
+        default: true
+      module-dir:
+        description: "Directory of the Go module, relative to the repository root."
+        required: false
+        type: string
+        default: "."
+      block-severity:
+        description: "Lowest severity that can block: low, medium or high."
+        required: false
+        type: string
+        default: high
+      block-confidence:
+        description: "Lowest confidence that can block: low, medium or high."
+        required: false
+        type: string
+        default: high
+      opengrep-exclude:
+        description: "Comma-separated paths and globs Opengrep skips."
+        required: false
+        type: string
+        default: "testdata,vendor,node_modules,*_test.go"
+      bundle-ref:
+        description: >-
+          Ref of otfabric/.github whose sast/ directory (scanner pins, rules,
+          gate) to use. The default is the release that contains it, so a rule
+          change reaches a repository with a new workflow release.
+        required: false
+        type: string
+        default: v3.4.0
+      artifact-name:
+        description: "Name of the report artifact. Calls in one run need different names."
+        required: false
+        type: string
+        default: sast-reports
+      retention-days:
+        description: "Days the report artifact is kept."
+        required: false
+        type: number
+        default: 30
+      timeout-minutes:
+        description: "Job timeout in minutes."
+        required: false
+        type: number
+        default: 15
+    secrets:
+      OTFABRIC_READ_TOKEN:
+        description: >-
+          Read access to private github.com/otfabric/* modules, needed only when
+          module-dir has them as dependencies. Forks and Dependabot never have
+          it; such a run fails with an incomplete scan, like the test jobs of a
+          module that cannot be built without those dependencies.
+        required: false
+    outputs:
+      scan-status:
+        description: "completed or incomplete. A skipped or failed job gives no value."
+        value: ${{ jobs.sast.outputs.scan-status }}
+      finding-status:
+        description: "clean, new (at the thresholds, not blocking in this mode) or blocked."
+        value: ${{ jobs.sast.outputs.finding-status }}
+
+permissions:
+  contents: read
+
+jobs:
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    outputs:
+      scan-status: ${{ steps.evaluate.outputs.scan-status }}
+      finding-status: ${{ steps.evaluate.outputs.finding-status }}
+    env:
+      BUNDLE_REF: ${{ inputs.bundle-ref }}
+      MODULE_DIR: ${{ inputs.module-dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout the SAST bundle
+        uses: actions/checkout@v7
+        with:
+          repository: otfabric/.github
+          ref: ${{ inputs.bundle-ref }}
+          path: .otfabric-sast-bundle
+          persist-credentials: false
+
+      # Out of the scanned tree, so the scanners do not report their own rules.
+      - name: Move the bundle out of the workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv .otfabric-sast-bundle "$RUNNER_TEMP/bundle"
+          mkdir -p "$RUNNER_TEMP/sast"
+
+      - name: Set up Go
+        if: inputs.run-gosec
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install gosec
+        if: inputs.run-gosec
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/bundle/sast/install.sh" gosec "$RUNNER_TEMP/tools"
+
+      - name: Install opengrep
+        if: inputs.run-opengrep
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/bundle/sast/install.sh" opengrep "$RUNNER_TEMP/tools"
+
+      # The token exists only in the environment of this one go command: no
+      # credential helper and no git config survive for the scan.
+      - name: Fetch Go dependencies
+        if: inputs.run-gosec
+        shell: bash
+        working-directory: ${{ inputs.module-dir }}
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+          GOPRIVATE: github.com/otfabric/*
+          GOWORK: "off"
+        run: |
+          set -uo pipefail
+          [ -f go.mod ] || exit 0
+          if [ -n "$TOKEN" ]; then
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="url.https://x-access-token:${TOKEN}@github.com/otfabric/.insteadOf"
+            export GIT_CONFIG_VALUE_0="https://github.com/otfabric/"
+          fi
+          go mod download || echo "::warning::go mod download failed; gosec will report an incomplete scan if it needs what is missing"
+
+      - name: Gosec
+        if: inputs.run-gosec
+        shell: bash
+        working-directory: ${{ inputs.module-dir }}
+        run: GOSEC_BIN="$RUNNER_TEMP/tools/gosec" bash "$RUNNER_TEMP/bundle/sast/run-gosec.sh" "$RUNNER_TEMP/sast"
+
+      - name: Opengrep
+        if: inputs.run-opengrep
+        shell: bash
+        env:
+          OPENGREP_EXCLUDE: ${{ inputs.opengrep-exclude }}
+        run: OPENGREP_BIN="$RUNNER_TEMP/tools/opengrep" bash "$RUNNER_TEMP/bundle/sast/run-opengrep.sh" "$RUNNER_TEMP/sast"
+
+      - name: Evaluate
+        id: evaluate
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          BLOCK_SEVERITY: ${{ inputs.block-severity }}
+          BLOCK_CONFIDENCE: ${{ inputs.block-confidence }}
+          RUN_GOSEC: ${{ inputs.run-gosec }}
+          RUN_OPENGREP: ${{ inputs.run-opengrep }}
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/bundle/sast/sast_gate.py" evaluate \
+            --out "$RUNNER_TEMP/sast" --bundle "$RUNNER_TEMP/bundle" --module-dir "$MODULE_DIR" \
+            --mode "$MODE" --block-severity "$BLOCK_SEVERITY" --block-confidence "$BLOCK_CONFIDENCE" \
+            --gosec "$RUN_GOSEC" --opengrep "$RUN_OPENGREP" \
+            --commit "$GITHUB_SHA" --bundle-ref "$BUNDLE_REF"
+          cat "$RUNNER_TEMP/sast/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            ${{ runner.temp }}/sast/status.json
+            ${{ runner.temp }}/sast/findings.json
+            ${{ runner.temp }}/sast/*.sarif
+            ${{ runner.temp }}/sast/summary.md
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: warn
+
+      - name: Scan completed
+        if: always()
+        shell: bash
+        run: python3 "$RUNNER_TEMP/bundle/sast/sast_gate.py" check-scan --out "$RUNNER_TEMP/sast"
+
+      - name: No blocking findings
+        if: always()
+        shell: bash
+        run: python3 "$RUNNER_TEMP/bundle/sast/sast_gate.py" check-findings --out "$RUNNER_TEMP/sast"

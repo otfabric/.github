@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# SAST code scanning — Reusable Workflow
+#
+# Optional. Uploads the SARIF reports of a sast.yml or go-ci.yml run of the same
+# workflow run to GitHub code scanning. Apart from sast.yml because a called
+# workflow's permissions must be granted by every caller, and security-events:
+# write is for those who opted in. Needs code scanning available on the
+# repository (public, or private with GitHub Advanced Security).
+#
+# Caller example:
+#
+#   jobs:
+#     ci:
+#       uses: otfabric/.github/.github/workflows/go-ci.yml@v3
+#       with:
+#         run-sast: true
+#     code-scanning:
+#       needs: ci
+#       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#       permissions:
+#         contents: read
+#         security-events: write
+#       uses: otfabric/.github/.github/workflows/sast-code-scanning.yml@v3
+
+name: SAST code scanning
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: "Name of the report artifact of the SAST job."
+        required: false
+        type: string
+        default: sast-reports
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  upload:
+    name: Upload SARIF
+    # A pull request from a fork has a read-only token and proposes code nobody
+    # has reviewed; findings of a pull request stay in its artifact.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download reports
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: sast-reports
+
+      - name: Upload gosec
+        if: hashFiles('sast-reports/gosec.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sast-reports/gosec.sarif
+          category: otfabric-gosec
+
+      - name: Upload opengrep
+        if: hashFiles('sast-reports/opengrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sast-reports/opengrep.sarif
+          category: otfabric-opengrep

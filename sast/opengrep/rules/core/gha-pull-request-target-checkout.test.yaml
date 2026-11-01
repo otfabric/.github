@@ -1,0 +1,14 @@
+on: pull_request_target
+jobs:
+  vulnerable:
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # ruleid: otfabric-gha-pull-request-target-checkout
+          ref: ${{ github.event.pull_request.head.sha }}
+  safe:
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # ok: otfabric-gha-pull-request-target-checkout
+          ref: main

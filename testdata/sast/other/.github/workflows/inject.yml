@@ -1,0 +1,8 @@
+# Planted: a pull request title reaches a shell.
+name: inject
+on: pull_request
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.event.pull_request.title }}"

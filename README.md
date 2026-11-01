@@ -4,8 +4,9 @@ Shared GitHub configuration of the OT Fabric organisation.
 
 | Path | What |
 |---|---|
-| [`.github/workflows/`](.github/workflows/README.md) | Reusable workflows: `go-ci.yml`, `go-package-release.yml`, `go-binary-release.yml` |
+| [`.github/workflows/`](.github/workflows/README.md) | Reusable workflows: `go-ci.yml`, `sast.yml`, `go-package-release.yml`, `go-binary-release.yml` |
 | [`actions/`](actions/README.md) | Composite actions for the `*-interop` repositories |
+| [`sast/`](sast/README.md) | Scanner pins, rule catalog and gate of `sast.yml` |
 | `profile/` | The organisation profile page |
 | `scripts/selftest/`, `testdata/` | Selftest of the workflows (`selftest.yml`) |
 

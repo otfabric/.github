@@ -8,6 +8,8 @@ The `OTFABRIC_READ_TOKEN` secret gives access to private `github.com/otfabric/*`
 
 **Versions.** `v3` turns on govulncheck, tests `cmd/`, uses atomic coverage and starts the matrix at the go directive. `v2` and `v2.1.0` were moved to the same commit by the maintainer on 2026-10-30, so they have these defaults too.
 
+**Release of SAST.** The default of `bundle-ref` in `sast.yml` and `sast-bundle-ref` in `go-ci.yml` names the release that contains the bundle. Change both when you cut a release that changes `sast/`, and only then tag it; `v3.4.0` does not exist until the maintainer creates it.
+
 **Selftest.** [`selftest.yml`](selftest.yml) tests these workflows on the fixtures in `testdata/` on every change. Add a case when you change behaviour.
 
 ## Workflows
@@ -17,6 +19,8 @@ Reusable workflows share whole pipelines (the caller's job is `uses:` one of the
 | Workflow | Purpose |
 |----------|---------|
 | [`go-ci.yml`](go-ci.yml) | Lint, static analysis, coverage, and multi-version test matrix |
+| [`sast.yml`](sast.yml) | Gosec and Opengrep, also through `go-ci.yml` with `run-sast`; see [`sast/README.md`](../../sast/README.md) |
+| [`sast-code-scanning.yml`](sast-code-scanning.yml) | Optional upload of the SARIF reports to GitHub code scanning |
 | [`go-package-release.yml`](go-package-release.yml) | Semver-tagged release for Go libraries / packages |
 | [`go-binary-release.yml`](go-binary-release.yml) | Cross-compiled binary release with SHA-256 checksums |
 
@@ -166,6 +170,12 @@ Each workflow's inputs are fully documented with descriptions inside the YAML fi
 | `fuzz-time` | `""` | Run every discovered Fuzz target this long, e.g. `10s`; empty = no fuzzing |
 | `run-policy` | `true` | Run `otfabric-policy` in its own job when `.otfabric/policy.yaml` exists |
 | `policy-version` | `v1.2.0` | Tag of `otfabric/engineering` whose `otfabric-policy` to run |
+| `run-sast` | `false` | Run `sast.yml` in its own job, with `contents: read` only |
+| `sast-mode` | `report` | `report`, `baseline` or `enforce` |
+| `sast-run-gosec`, `sast-run-opengrep` | `true` | Which scanners run |
+| `sast-block-severity`, `sast-block-confidence` | `high` | Lowest level that can block |
+| `sast-bundle-ref` | `v3.4.0` | Ref of this repository whose `sast/` directory to use |
+| `sast-artifact-name` | `sast-reports` | Report artifact; two calls in one run need different names |
 | `test-exclude-regex` | `/example(s)?($\|/)` | Packages to skip during testing; `cmd/` is tested |
 | `coverpkg` | `""` | Optional `-coverpkg` list for merged cross-package coverage (Codecov) |
 | `codecov-name` | `""` | Set to enable Codecov upload |
