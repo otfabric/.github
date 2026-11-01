@@ -97,7 +97,7 @@ def parse_gosec(path, root, module_dir):
         rel = relative(root, i.get("file", ""), "")
         # A package with tests is analysed twice, on its own and as its test
         # variant, and gosec reports the same line from both.
-        key = (i.get("rule_id"), rel, line)
+        key = (i.get("rule_id"), rel, line, i.get("severity"), i.get("confidence"), i.get("details"))
         if key in seen:
             continue
         seen.add(key)
