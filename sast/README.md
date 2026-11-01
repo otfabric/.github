@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   sast:
-    uses: otfabric/.github/.github/workflows/sast.yml@v3
+    uses: otfabric/.github/.github/workflows/sast.yml@v3.5.0
     with:
       mode: ${{ inputs.mode }}
     secrets:
