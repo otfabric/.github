@@ -190,7 +190,7 @@ jobs:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `module-dir` | `.` | Directory of the Go module docsync checks |
-| `docsync-version` | `v0.1.0` | Tag of `otfabric/docsync` to run |
+| `docsync-version` | `v0.3.0` | Tag of `otfabric/docsync` to run |
 | `mode` | `enforce` | `warn` turns findings into warnings; a docsync error fails in both modes |
 | `run-policy` | `true` | Run `otfabric-policy`, as in `go-ci.yml` |
 | `policy-version` | `v1.3.0` | Tag of `otfabric/engineering` whose `otfabric-policy` to run |
