@@ -2,7 +2,7 @@
 
 ## What this is
 
-The organisation's shared GitHub configuration: the reusable workflows `go-ci.yml`, `go-package-release.yml` and `go-binary-release.yml`, the composite actions for the `*-interop` repositories, the organisation profile page, and the selftest of the workflows. There is no product and no Go module of its own; the Go code under `testdata/` is fixtures. Every OT Fabric repository depends on this one, so a mistake here reaches all of them. Profile: **infrastructure**.
+The organisation's shared GitHub configuration: the reusable workflows `go-ci.yml`, `docs-check.yml`, `go-package-release.yml` and `go-binary-release.yml`, the composite actions for the `*-interop` repositories, the organisation profile page, and the selftest of the workflows. There is no product and no Go module of its own; the Go code under `testdata/` is fixtures. Every OT Fabric repository depends on this one, so a mistake here reaches all of them. Profile: **infrastructure**.
 
 ## Organisation standards
 

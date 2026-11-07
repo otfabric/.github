@@ -1,0 +1,229 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Docs Check — Reusable Workflow
+#
+# Checks that a Go module's documents say what its code does, with
+# otfabric/docsync, and runs otfabric-policy. It is cheap, so it runs on every
+# push and pull request, including those that change Markdown only, which the
+# heavy workflows skip with paths-ignore. That makes its jobs the ones a
+# branch protection rule can require.
+#
+# Jobs:
+#   docsync  — docsync check in module-dir, annotations and a summary.
+#   policy   — Optional (run-policy), otfabric-policy on repositories with
+#              .otfabric/policy.yaml, as in go-ci.yml.
+#
+# Caller example (.github/workflows/docs.yml):
+#
+#   name: Docs
+#   on:
+#     push:
+#       branches: [main]
+#     pull_request:
+#   permissions:
+#     contents: read
+#   jobs:
+#     docs:
+#       uses: otfabric/.github/.github/workflows/docs-check.yml@v3
+#       secrets: inherit
+
+name: Docs Check
+
+on:
+  workflow_call:
+    inputs:
+      module-dir:
+        description: "Directory of the Go module to check."
+        required: false
+        type: string
+        default: "."
+      docsync-version:
+        description: "Tag of otfabric/docsync to run."
+        required: false
+        type: string
+        default: "v0.1.0"
+      mode:
+        description: >-
+          enforce: findings fail the job. warn: findings are annotations and
+          the job passes. A docsync error (exit code 2 or more) fails the job
+          in both modes.
+        required: false
+        type: string
+        default: "enforce"
+      timeout-minutes:
+        description: "Job timeout in minutes."
+        required: false
+        type: number
+        default: 15
+      run-policy:
+        description: >-
+          Run otfabric-policy on the repository root, in its own job, when
+          .otfabric/policy.yaml exists. Needs OTFABRIC_READ_TOKEN.
+        required: false
+        type: boolean
+        default: true
+      policy-version:
+        description: "Tag of otfabric/engineering whose otfabric-policy to run."
+        required: false
+        type: string
+        default: "v1.3.0"
+    secrets:
+      OTFABRIC_READ_TOKEN:
+        description: >-
+          PAT with read access to private github.com/otfabric/* modules.
+          docsync type-checks the documents' Go blocks against the module, so
+          it loads the module's dependencies; the policy job fetches
+          otfabric-policy. Forks and Dependabot never have it.
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  GOPRIVATE: github.com/otfabric/*
+
+concurrency:
+  group: docs-check-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.module-dir }}
+  cancel-in-progress: true
+
+jobs:
+  docsync:
+    name: Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.module-dir }}
+
+    steps:
+      # The tags and history: DS-SEC compares SECURITY.md with the latest
+      # tag, DS-REL compares RELEASE.md with the commit dates.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # docsync needs Go 1.26; the module's go directive only sets a floor,
+      # and the type check of the documents runs on the toolchain it is given.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: true
+          cache-dependency-path: |
+            ${{ inputs.module-dir }}/go.sum
+
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: |
+          if [ -n "${TOKEN}" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/otfabric/".insteadOf "https://github.com/otfabric/"
+          fi
+
+      # One run: the JSON findings give the annotations and the summary, so
+      # the module is loaded once. Exit code 1 means findings, 2 and above an
+      # error of docsync or of the configuration.
+      - name: docsync
+        shell: bash
+        env:
+          GOWORK: "off"
+          VERSION: ${{ inputs.docsync-version }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -uo pipefail
+          case "$MODE" in enforce|warn) ;; *) echo "::error::mode must be enforce or warn, not '$MODE'"; exit 2 ;; esac
+          go run "github.com/otfabric/docsync@${VERSION}" check --format github . > "$RUNNER_TEMP/docsync.txt"
+          code=$?
+          if [ "$MODE" = warn ]; then
+            sed 's/^::error /::warning /' "$RUNNER_TEMP/docsync.txt"
+          else
+            cat "$RUNNER_TEMP/docsync.txt"
+          fi
+          count=$(grep -c '^::error ' "$RUNNER_TEMP/docsync.txt" || true)
+          {
+            echo "### docsync ${VERSION}"
+            echo
+            if [ "$code" -eq 0 ]; then
+              echo "The documents agree with the code."
+            elif [ "$code" -eq 1 ]; then
+              echo "$count findings (mode: $MODE). Run \`go run github.com/otfabric/docsync@${VERSION} check .\` locally for the list."
+            else
+              echo "docsync failed with exit code $code; see the log."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -eq 1 ] && [ "$MODE" = warn ]; then
+            exit 0
+          fi
+          exit "$code"
+
+  # As in go-ci.yml: the check is about the repository, so it runs at the
+  # root. A secret cannot be read in a job-level if, so a step decides.
+  policy:
+    name: Policy
+    if: inputs.run-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Decide whether the policy check runs
+        id: gate
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          run=false
+          if [ ! -f .otfabric/policy.yaml ]; then
+            echo "::notice::otfabric-policy skipped: no .otfabric/policy.yaml"
+          elif [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::notice::otfabric-policy skipped: pull request from a fork has no secrets"
+          elif [ -n "$TOKEN" ]; then
+            run=true
+          elif [ "$ACTOR" = 'dependabot[bot]' ]; then
+            echo "::notice::otfabric-policy skipped: Dependabot runs have no Actions secrets"
+          else
+            echo "::error::OTFABRIC_READ_TOKEN is empty, so otfabric-policy cannot be fetched. Pass it with 'secrets: inherit', or set run-policy: false."
+            exit 1
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Configure private module access
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/otfabric/engineering".insteadOf "https://github.com/otfabric/engineering"
+
+      - name: otfabric-policy
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          GOWORK: "off"
+          GOPRIVATE: github.com/otfabric/engineering
+          VERSION: ${{ inputs.policy-version }}
+        run: |
+          set -euo pipefail
+          go run "github.com/otfabric/engineering/cmd/otfabric-policy@${VERSION}" check -format markdown . | tee -a "$GITHUB_STEP_SUMMARY"
