@@ -62,6 +62,25 @@ jobs:
       run-govulncheck: false
       run-policy: false
 
+  # docs-check.yml: a module whose documents agree with its code, enforced,
+  # with the policy job on.
+  docs-check-pass:
+    uses: ./.github/workflows/docs-check.yml
+    with:
+      module-dir: testdata/docs-check/pass
+      mode: enforce
+      policy-version: v1.2.0
+    secrets:
+      OTFABRIC_READ_TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+
+  # A module with a finding passes in warn mode.
+  docs-check-warn:
+    uses: ./.github/workflows/docs-check.yml
+    with:
+      module-dir: testdata/docs-check/fail
+      mode: warn
+      run-policy: false
+
   matrix-floor:
     name: Matrix floor cases
     runs-on: ubuntu-latest
@@ -111,6 +130,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: scripts/selftest/policy.sh
+
+  docs-check-modes:
+    name: Docs check cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - run: scripts/selftest/docs-check.sh
 
   release-notes:
     name: Release notes extraction

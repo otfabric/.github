@@ -4,7 +4,7 @@ Shared [reusable workflows](https://docs.github.com/en/actions/sharing-automatio
 
 The `OTFABRIC_READ_TOKEN` secret gives access to private `github.com/otfabric/*` modules. In `go-ci.yml` it is needed when a module has private dependencies, and by the policy job when `.otfabric/policy.yaml` exists. The token must be able to read `otfabric/engineering`.
 
-**Permissions.** The organisation's default `GITHUB_TOKEN` is read-only, and a caller must grant at least what a called workflow requests, or the run fails at startup with no job started. Grant `contents: read` and `id-token: write` for `go-ci.yml` (Codecov OIDC), and `contents: write` for the release workflows.
+**Permissions.** The organisation's default `GITHUB_TOKEN` is read-only, and a caller must grant at least what a called workflow requests, or the run fails at startup with no job started. Grant `contents: read` and `id-token: write` for `go-ci.yml` (Codecov OIDC), `contents: read` for `docs-check.yml`, and `contents: write` for the release workflows.
 
 **Versions.** `v3` turns on govulncheck, tests `cmd/`, uses atomic coverage and starts the matrix at the go directive. `v2` and `v2.1.0` were moved to the same commit by the maintainer on 2026-10-30, so they have these defaults too.
 
@@ -19,6 +19,7 @@ Reusable workflows share whole pipelines (the caller's job is `uses:` one of the
 | [`go-ci.yml`](go-ci.yml) | Lint, static analysis, coverage, and multi-version test matrix |
 | [`go-package-release.yml`](go-package-release.yml) | Semver-tagged release for Go libraries / packages |
 | [`go-binary-release.yml`](go-binary-release.yml) | Cross-compiled binary release with SHA-256 checksums |
+| [`docs-check.yml`](docs-check.yml) | [docsync](https://github.com/otfabric/docsync) and otfabric-policy, on every push, Markdown-only ones included |
 
 ## Which workflows to use
 
@@ -147,6 +148,56 @@ Both release workflows support an optional `RELEASE.md` file in the repo root. W
 ```
 
 Sections are delimited by `---`. Only the section matching the tag being released is extracted.
+
+## Markdown-only changes
+
+A push or pull request that changes only Markdown needs no build, tests or
+interop run. The heavy workflows of a repository skip it:
+
+```yaml
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md']
+  pull_request:
+    paths-ignore: ['**/*.md']
+```
+
+A workflow that checks a generated Markdown file (for example `OBJECTS.md`)
+lists it instead: `paths: ['**', '!**/*.md', 'OBJECTS.md']`. Tag pushes and
+`workflow_dispatch` are never filtered.
+
+The documents are still checked: `docs-check.yml` runs on every push and pull
+request, with no path filter, so the Docs and Policy checks always report. A
+branch protection rule must require those, never a job of a workflow that a
+path filter can skip: a skipped required workflow leaves the check pending.
+
+```yaml
+# .github/workflows/docs.yml
+name: Docs
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  docs:
+    uses: otfabric/.github/.github/workflows/docs-check.yml@v3
+    secrets: inherit
+```
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `module-dir` | `.` | Directory of the Go module docsync checks |
+| `docsync-version` | `v0.1.0` | Tag of `otfabric/docsync` to run |
+| `mode` | `enforce` | `warn` turns findings into warnings; a docsync error fails in both modes |
+| `run-policy` | `true` | Run `otfabric-policy`, as in `go-ci.yml` |
+| `policy-version` | `v1.3.0` | Tag of `otfabric/engineering` whose `otfabric-policy` to run |
+| `timeout-minutes` | `15` | Job timeout |
+
+With the Policy job here, a repository that calls both can set
+`run-policy: false` in `go-ci.yml`.
 
 ## Inputs reference
 
