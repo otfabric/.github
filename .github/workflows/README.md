@@ -133,6 +133,10 @@ jobs:
 
 A library that bundles a small CLI keeps it in its own module (`cmd/<tool>/go.mod`), so library consumers do not inherit its dependencies. Pass `module-dir: cmd/<tool>` and `main-path: .` to `go-binary-release.yml`. No `go.work` is needed.
 
+## Go version of release builds
+
+`go-binary-release.yml` builds with the newest patch release of the Go minor version the module declares: `go 1.26.0` (or `go 1.26`) builds with the latest 1.26.x. A `toolchain` line counts when its minor version is newer. The `go` directive stays the floor for users; it does not pin the compiler of the shipped binaries, so a patch release of Go reaches them on the next release.
+
 ## Release notes via RELEASE.md
 
 Both release workflows support an optional `RELEASE.md` file in the repo root. When a section matching the new tag is found, its content is used as the GitHub Release body. Otherwise a commit-log changelog is generated automatically.
