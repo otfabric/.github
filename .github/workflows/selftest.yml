@@ -131,6 +131,18 @@ jobs:
       - uses: actions/checkout@v7
       - run: scripts/selftest/policy.sh
 
+  docs-check-modes:
+    name: Docs check cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - run: scripts/selftest/docs-check.sh
+
   release-notes:
     name: Release notes extraction
     runs-on: ubuntu-latest

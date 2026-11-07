@@ -125,9 +125,17 @@ jobs:
             git config --global url."https://x-access-token:${TOKEN}@github.com/otfabric/".insteadOf "https://github.com/otfabric/"
           fi
 
-      # One run: the JSON findings give the annotations and the summary, so
-      # the module is loaded once. Exit code 1 means findings, 2 and above an
-      # error of docsync or of the configuration.
+      # Installed, not run with go run, which turns every exit code into 1.
+      - name: Install docsync
+        shell: bash
+        env:
+          GOWORK: "off"
+          VERSION: ${{ inputs.docsync-version }}
+        run: GOBIN="$RUNNER_TEMP/bin" go install "github.com/otfabric/docsync@${VERSION}"
+
+      # One run gives the annotations and the summary, so the module is loaded
+      # once. Exit code 1 means findings, 2 and above an error of docsync or
+      # of the configuration.
       - name: docsync
         shell: bash
         env:
@@ -135,9 +143,9 @@ jobs:
           VERSION: ${{ inputs.docsync-version }}
           MODE: ${{ inputs.mode }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           case "$MODE" in enforce|warn) ;; *) echo "::error::mode must be enforce or warn, not '$MODE'"; exit 2 ;; esac
-          go run "github.com/otfabric/docsync@${VERSION}" check --format github . > "$RUNNER_TEMP/docsync.txt"
+          "$RUNNER_TEMP/bin/docsync" check --format github . > "$RUNNER_TEMP/docsync.txt"
           code=$?
           if [ "$MODE" = warn ]; then
             sed 's/^::error /::warning /' "$RUNNER_TEMP/docsync.txt"
