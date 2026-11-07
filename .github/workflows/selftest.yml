@@ -150,3 +150,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: scripts/selftest/release-notes.sh
+
+  go-version:
+    name: Release Go version resolution
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/selftest/go-version.sh

@@ -214,10 +214,29 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve Go version
+        id: go-version
+        shell: bash
+        env:
+          GO_MOD: go.mod
+        run: |
+          set -euo pipefail
+          # The newest patch of the Go minor the module declares (go 1.26.0 -> 1.26,
+          # built with the latest 1.26.x), or of its toolchain line if that is newer.
+          # Building with go.mod's exact version would ship old patch releases.
+          [ -f "$GO_MOD" ] || { echo "::error::$GO_MOD not found"; exit 1; }
+          minor() { sed -nE "s/^$1[[:space:]]+(go)?([0-9]+\.[0-9]+).*/\2/p" "$GO_MOD" | head -1; }
+          go=$(minor go); toolchain=$(minor toolchain)
+          [ -n "$go" ] || { echo "::error::no go directive in $GO_MOD"; exit 1; }
+          version=$(printf '%s\n%s\n' "$go" "$toolchain" | sed '/^$/d' | sort -t. -k1,1n -k2,2n | tail -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Go $version (latest patch) from $GO_MOD"
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go-version.outputs.version }}
+          check-latest: true
           cache: true
           cache-dependency-path: |
             go.sum
@@ -397,10 +416,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Resolve Go version
+        id: go-version
+        shell: bash
+        env:
+          GO_MOD: ${{ inputs.module-dir }}/go.mod
+        run: |
+          set -euo pipefail
+          # The newest patch of the Go minor the module declares (go 1.26.0 -> 1.26,
+          # built with the latest 1.26.x), or of its toolchain line if that is newer.
+          # Building with go.mod's exact version would ship old patch releases.
+          [ -f "$GO_MOD" ] || { echo "::error::$GO_MOD not found"; exit 1; }
+          minor() { sed -nE "s/^$1[[:space:]]+(go)?([0-9]+\.[0-9]+).*/\2/p" "$GO_MOD" | head -1; }
+          go=$(minor go); toolchain=$(minor toolchain)
+          [ -n "$go" ] || { echo "::error::no go directive in $GO_MOD"; exit 1; }
+          version=$(printf '%s\n%s\n' "$go" "$toolchain" | sed '/^$/d' | sort -t. -k1,1n -k2,2n | tail -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Go $version (latest patch) from $GO_MOD"
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: ${{ inputs.module-dir }}/go.mod
+          go-version: ${{ steps.go-version.outputs.version }}
+          check-latest: true
           cache: true
           cache-dependency-path: |
             go.sum
