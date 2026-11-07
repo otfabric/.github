@@ -41,7 +41,7 @@ on:
         description: "Tag of otfabric/docsync to run."
         required: false
         type: string
-        default: "v0.1.0"
+        default: "v0.3.0"
       mode:
         description: >-
           enforce: findings fail the job. warn: findings are annotations and
