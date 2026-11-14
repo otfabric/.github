@@ -1,0 +1,188 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# PR Changes — Reusable Workflow
+#
+# Classifies a pull request for the PR orchestration workflow of a repository:
+# documentation only, or everything else. The heavy jobs of the caller (Go CI,
+# interop, generated code) run when `full` is "true"; the documentation and
+# policy jobs run on every pull request.
+#
+# Unknown means full. A file counts as documentation only when it is an added
+# or modified regular Markdown file outside dot directories, testdata/ and
+# vendor/, is not agent instructions (AGENTS.md, CLAUDE.md), and matches no
+# pattern in code-paths. Anything else, a deletion or a rename, a run that is
+# not a pull request, and a checkout that is not the pull request's merge
+# commit give full: "true". The step never fails on a classification problem;
+# it reports the reason instead.
+#
+# The changed files are those of the merge commit GitHub tests (its first
+# parent is the base branch), so they are exactly what the heavy jobs check
+# out: no API pagination, no file limit, no token scope beyond contents: read.
+#
+# Jobs:
+#   classify  — "Classify changes": outputs full and reason, a table in the
+#               job summary.
+#
+# Caller example (in the repository's PR workflow):
+#
+#   jobs:
+#     changes:
+#       uses: otfabric/.github/.github/workflows/pr-changes.yml@v3
+#       with:
+#         # Markdown that a test or generator reads counts as code.
+#         code-paths: |
+#           README.md
+
+name: PR Changes
+
+on:
+  workflow_call:
+    inputs:
+      code-paths:
+        description: >-
+          Newline-separated fnmatch patterns, matched against the whole path
+          (`*` also matches `/`). A Markdown file that matches counts as code:
+          a README whose snippets a test checks, a generated document.
+          Lines starting with # are comments.
+        required: false
+        type: string
+        default: ""
+    outputs:
+      full:
+        description: '"true": run every check. "false": documentation only.'
+        value: ${{ jobs.classify.outputs.full }}
+      reason:
+        description: "One line: why the pull request was classified so."
+        value: ${{ jobs.classify.outputs.reason }}
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      full: ${{ steps.classify.outputs.full }}
+      reason: ${{ steps.classify.outputs.reason }}
+
+    steps:
+      # The merge commit and both its parents. Nothing from it is executed.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Classify changed files
+        id: classify
+        shell: python3 -I {0}
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CODE_PATHS: ${{ inputs.code-paths }}
+        run: |
+          import fnmatch
+          import os
+          import subprocess
+          import sys
+
+          AGENT_FILES = {"agents.md", "claude.md", "claude.local.md", "gemini.md"}
+          SUMMARY_ROWS = 200
+
+
+          def printable(text):
+              # A file name can hold a newline; it must not reach GITHUB_OUTPUT
+              # or a workflow command as a line of its own.
+              return "".join(ch if ch.isprintable() else "?" for ch in text)
+
+
+          def finish(full, reason, rows=()):
+              reason = printable(reason)
+              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                  out.write(f"reason={reason}\n")
+                  out.write(f"full={'true' if full else 'false'}\n")
+              verdict = "full validation" if full else "documentation only"
+              print(f"::notice title=PR changes::{verdict}: {reason}")
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  with open(summary, "a") as s:
+                      s.write(f"### PR changes: {verdict}\n\n{reason}\n\n")
+                      if rows:
+                          s.write("| File | Status | Counts as |\n|---|---|---|\n")
+                          for path, status, why in rows[:SUMMARY_ROWS]:
+                              shown = printable(path).replace("|", "\\|").replace("`", "'")
+                              s.write(f"| `{shown}` | {status} | {'code: ' + why if why else 'documentation'} |\n")
+                          if len(rows) > SUMMARY_ROWS:
+                              s.write(f"\n{len(rows) - SUMMARY_ROWS} more files not shown.\n")
+              sys.exit(0)
+
+
+          def git(*args):
+              return subprocess.run(["git", *args], capture_output=True, check=True).stdout
+
+
+          def code_reason(path, status, old_mode, new_mode, patterns):
+              """None when the file is documentation only, else why it is code."""
+              if status not in ("A", "M"):
+                  return f"status {status}: only added or modified Markdown is documentation"
+              if new_mode != "100644" or (status == "M" and old_mode != "100644"):
+                  return "not a regular file"
+              if not path.endswith(".md"):
+                  return "not Markdown"
+              parts = path.split("/")
+              if any(p.startswith(".") for p in parts):
+                  return "hidden, or in a dot directory"
+              if "testdata" in parts or "vendor" in parts:
+                  return "fixture or vendored file"
+              if parts[-1].lower() in AGENT_FILES:
+                  return "agent instructions"
+              for p in patterns:
+                  if fnmatch.fnmatchcase(path, p):
+                      return f"matches code-paths {p}"
+              return None
+
+
+          try:
+              event = os.environ.get("EVENT", "")
+              if event != "pull_request":
+                  finish(True, f"a {event or 'unknown'} event has no pull request to classify")
+              head = os.environ.get("HEAD_SHA", "")
+              patterns = [
+                  line.strip()
+                  for line in os.environ.get("CODE_PATHS", "").splitlines()
+                  if line.strip() and not line.strip().startswith("#")
+              ]
+              commits = git("rev-list", "--parents", "-n", "1", "HEAD").decode().split()
+              if len(commits) != 3:
+                  finish(True, f"HEAD has {len(commits) - 1} parents, not the two of a pull request merge commit")
+              if not head or commits[2] != head:
+                  finish(True, f"the second parent of HEAD is not the pull request head {head or '(unknown)'}")
+              raw = git("diff", "--raw", "--no-renames", "--no-abbrev", "-z", commits[1], commits[0])
+              fields = raw.split(b"\0")
+              if fields and fields[-1] == b"":
+                  fields.pop()
+              if len(fields) % 2:
+                  finish(True, "the output of git diff could not be parsed")
+              rows = []
+              for meta, path in zip(fields[0::2], fields[1::2]):
+                  m = meta.decode().lstrip(":").split()
+                  if len(m) != 5:
+                      finish(True, "the output of git diff could not be parsed")
+                  old_mode, new_mode, status = m[0], m[1], m[4]
+                  name = path.decode("utf-8", "replace")
+                  rows.append((name, status, code_reason(name, status, old_mode, new_mode, patterns)))
+              if not rows:
+                  finish(True, "the merge commit changes no files")
+              code = [r for r in rows if r[2]]
+              if code:
+                  path, _, why = code[0]
+                  finish(True, f"{len(code)} of {len(rows)} changed files are not documentation, e.g. {path} ({why})", rows)
+              finish(False, f"all {len(rows)} changed files are documentation", rows)
+          except SystemExit:
+              raise
+          except Exception as e:  # unknown means full
+              finish(True, f"classification failed ({type(e).__name__}: {e})")

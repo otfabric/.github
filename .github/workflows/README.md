@@ -4,7 +4,7 @@ Shared [reusable workflows](https://docs.github.com/en/actions/sharing-automatio
 
 The `OTFABRIC_READ_TOKEN` secret gives access to private `github.com/otfabric/*` modules. In `go-ci.yml` it is needed when a module has private dependencies, and by the policy job when `.otfabric/policy.yaml` exists. The token must be able to read `otfabric/engineering`.
 
-**Permissions.** The organisation's default `GITHUB_TOKEN` is read-only, and a caller must grant at least what a called workflow requests, or the run fails at startup with no job started. Grant `contents: read` and `id-token: write` for `go-ci.yml` (Codecov OIDC), `contents: read` for `docs-check.yml`, and `contents: write` for the release workflows.
+**Permissions.** The organisation's default `GITHUB_TOKEN` is read-only, and a caller must grant at least what a called workflow requests, or the run fails at startup with no job started. Grant `contents: read` and `id-token: write` for `go-ci.yml` (Codecov OIDC), `contents: read` for `docs-check.yml` and `pr-changes.yml`, and `contents: write` for the release workflows.
 
 **Versions.** `v3` turns on govulncheck, tests `cmd/`, uses atomic coverage and starts the matrix at the go directive. `v2` and `v2.1.0` were moved to the same commit by the maintainer on 2026-10-30, so they have these defaults too.
 
@@ -20,6 +20,9 @@ Reusable workflows share whole pipelines (the caller's job is `uses:` one of the
 | [`go-package-release.yml`](go-package-release.yml) | Semver-tagged release for Go libraries / packages |
 | [`go-binary-release.yml`](go-binary-release.yml) | Cross-compiled binary release with SHA-256 checksums |
 | [`docs-check.yml`](docs-check.yml) | [docsync](https://github.com/otfabric/docsync) and otfabric-policy, on every push, Markdown-only ones included |
+| [`pr-changes.yml`](pr-changes.yml) | Classifies a pull request: documentation only, or full validation; for the PR workflow below |
+
+The required check of a PR workflow is the composite action [`actions/required-gate`](../../actions/README.md#required-check-of-a-pr-workflow).
 
 ## Which workflows to use
 
@@ -153,7 +156,134 @@ Both release workflows support an optional `RELEASE.md` file in the repo root. W
 
 Sections are delimited by `---`. Only the section matching the tag being released is extracted.
 
-## Markdown-only changes
+## PR workflow and the required check
+
+A repository that adopts it runs its heavy validation once per pull request
+revision, and not again on the push of the branch or on the merge to `main`:
+
+| Event | What runs |
+|---|---|
+| Push to a feature branch | Nothing |
+| Pull request opened, synchronized, reopened | `pr.yml`: Docs and Policy always; CI, interop and the other heavy jobs unless the pull request is documentation only; then `OT Fabric Required Checks` |
+| Push to `main` (the merge) | `docs.yml` only (docsync and policy, about a minute) |
+| Schedule, `workflow_dispatch` | Unchanged: nightly, self-interop; `ci.yml` and `interop.yml` can also be dispatched on any branch |
+| Release | Unchanged: the release workflows test the release commit in full |
+
+One workflow, `pr.yml`, runs on every pull request with no path filter, and
+its last job is the only required check. The heavy workflows keep their jobs
+and become reusable (`on: workflow_call`), so nothing is copied:
+
+```yaml
+# .github/workflows/pr.yml
+name: PR
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new revision cancels the run of the previous one; other workflows
+# (release, nightly, dispatch) are in other groups.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    uses: otfabric/.github/.github/workflows/pr-changes.yml@v3.7.0
+
+  docs:
+    uses: ./.github/workflows/docs.yml
+    secrets: inherit
+
+  ci:
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  required:
+    name: OT Fabric Required Checks
+    needs: [changes, docs, ci]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: otfabric/.github/actions/required-gate@v3.7.0
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: changes docs
+          required-for-code: ci
+```
+
+The rules the shape depends on:
+
+- **No path filter on `pr.yml`.** A required check whose workflow a filter
+  skipped never reports, and the pull request waits for it forever.
+- **The gate has `if: always()`.** It runs when a job failed or the run was
+  cancelled, and fails then. A skipped job counts as passed for a required
+  check, so the gate must never be skipped; `!cancelled()` would skip it.
+- **The gate needs every other job**, and lists each in `required` (must
+  succeed on every pull request) or `required-for-code` (must succeed unless
+  the pull request is documentation only, and then must be skipped). A job
+  in `needs` that is in neither list, or a listed job missing from `needs`,
+  fails the gate, so a job cannot be added without an expectation.
+- **The gate job is defined in `pr.yml` itself**, so the check is named
+  `OT Fabric Required Checks` with no prefix. A gate inside a called
+  workflow would report as `<caller job> / <job>`.
+- **The heavy jobs depend on `changes`** and run when `full` is `"true"`. If
+  `changes` fails they are skipped and the gate fails: rerun the failed jobs.
+- **Keep the triggers** to the defaults (`opened`, `synchronize`,
+  `reopened`). `edited` would rerun everything on a title change. A pull
+  request whose base is changed to `main` gets a run on its next push, or
+  close and reopen it.
+
+`pr-changes.yml` classifies the files the pull request's merge commit
+changes, compared with its first parent: exactly the tree the jobs test.
+Documentation only means every changed file is an added or modified regular
+`*.md` file, not in a dot directory, `testdata/` or `vendor/`, not
+`AGENTS.md`, `CLAUDE.md` or `GEMINI.md`, and not matched by `code-paths`.
+A deletion, a rename, a symlink, any other file, a run that is not a pull
+request, or a checkout it cannot verify gives `full: "true"`. List Markdown
+that a test or generator reads in `code-paths` (go-iec61850's
+`readme_test.go` reads `README.md`):
+
+```yaml
+  changes:
+    uses: otfabric/.github/.github/workflows/pr-changes.yml@v3.7.0
+    with:
+      code-paths: |
+        README.md
+        docs/generated/*.md
+```
+
+Patterns are `fnmatch` patterns on the whole path: `*` also matches `/`, so
+`*.md` matches every Markdown file and `README.md` only the root one.
+
+### Migrating a repository
+
+1. Make each heavy workflow reusable: replace its `push` and `pull_request`
+   triggers with `workflow_call` and `workflow_dispatch`. Its jobs, inputs
+   and pins stay as they are.
+2. `docs.yml`: keep `push: branches: [main]`, replace `pull_request` with
+   `workflow_call`.
+3. Add `pr.yml` as above, with one job per reusable workflow and one entry
+   for each in the gate. Grant each job the permissions its workflow
+   requests (`id-token: write` for go-ci, `packages: read` for GHCR pulls).
+4. Open the pull request. It runs `pr.yml` from the branch: check that
+   `OT Fabric Required Checks` reports, and that its summary lists every job.
+5. Only then require the check, by the exact name, in a ruleset (strict:
+   the branch must be up to date with `main`). Never require a job of a
+   called workflow or of a workflow with a path filter.
+
+Rollback: restore the previous triggers of the heavy workflows and delete
+`pr.yml`; first remove the required check from the ruleset, or every open
+pull request waits for it.
+
+## Markdown-only changes (repositories without a PR workflow)
 
 A push or pull request that changes only Markdown needs no build, tests or
 interop run. The heavy workflows of a repository skip it:

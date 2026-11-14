@@ -1,0 +1,37 @@
+name: OT Fabric required checks
+description: >-
+  The single required check of a repository's PR workflow. Fails unless every
+  job in `required` succeeded and every job in `required-for-code` succeeded
+  on a pull request classified as code (or was skipped on a documentation-only
+  one). Use it in a job named "OT Fabric Required Checks" that needs every
+  other job of the workflow and runs with if: always().
+inputs:
+  needs:
+    description: 'The needs context of the gate job as JSON (toJSON(needs)).'
+    required: true
+  required:
+    description: >-
+      Job ids, separated by spaces, commas or newlines, that must succeed on
+      every pull request. Must include changes-job.
+    required: true
+  required-for-code:
+    description: >-
+      Job ids that must succeed when changes-job reports full == "true", and
+      that may only be skipped (or succeed) when it reports "false".
+    required: false
+    default: ""
+  changes-job:
+    description: Id of the job that calls pr-changes.yml; its outputs.full decides.
+    required: false
+    default: changes
+runs:
+  using: composite
+  steps:
+    - name: Evaluate required checks
+      shell: bash
+      env:
+        NEEDS_JSON: ${{ inputs.needs }}
+        REQUIRED: ${{ inputs.required }}
+        REQUIRED_FOR_CODE: ${{ inputs.required-for-code }}
+        CHANGES_JOB: ${{ inputs.changes-job }}
+      run: python3 -I "$GITHUB_ACTION_PATH/gate.py"

@@ -5,6 +5,42 @@ where the repositories share some steps but their jobs differ. Where a whole
 pipeline is the same everywhere, use a reusable workflow instead
 ([`.github/workflows/`](../.github/workflows/README.md)).
 
+## Required check of a PR workflow
+
+`otfabric/.github/actions/required-gate@v3.7.0` is the last job of a
+repository's `pr.yml` and the only check a ruleset requires (see
+[PR workflow and the required check](../.github/workflows/README.md#pr-workflow-and-the-required-check)).
+Pin it by release tag, like the workflows it goes with.
+
+```yaml
+  required:
+    name: OT Fabric Required Checks
+    needs: [changes, docs, ci, interop]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: otfabric/.github/actions/required-gate@v3.7.0
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: changes docs
+          required-for-code: ci interop
+```
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `needs` | *(required)* | `${{ toJSON(needs) }}` of the gate job |
+| `required` | *(required)* | Job ids that must succeed on every pull request; includes `changes-job` |
+| `required-for-code` | `""` | Job ids that must succeed when the pull request is not documentation only, and be skipped (or succeed) when it is |
+| `changes-job` | `changes` | The job that calls `pr-changes.yml`; its `full` output decides |
+
+The gate fails on a failed, cancelled, unexpectedly skipped or malformed
+result, on a listed job that is not in `needs`, on a job in `needs` that is
+in neither list, and when the classification is missing or is neither
+`"true"` nor `"false"`. Its job summary has one row per job. The logic is
+[`required-gate/gate.py`](required-gate/gate.py), standard library only;
+`scripts/selftest/required-gate.sh` runs it on every outcome.
+
 ## Upstream check (`*-interop` repositories)
 
 Every `*-interop` repository has a daily `Upstream` workflow
