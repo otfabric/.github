@@ -140,9 +140,41 @@ A library that bundles a small CLI keeps it in its own module (`cmd/<tool>/go.mo
 
 `go-binary-release.yml` builds with the newest patch release of the Go minor version the module declares: `go 1.26.0` (or `go 1.26`) builds with the latest 1.26.x. A `toolchain` line counts when its minor version is newer. The `go` directive stays the floor for users; it does not pin the compiler of the shipped binaries, so a patch release of Go reaches them on the next release.
 
+## API compatibility gate
+
+`go-package-release.yml` checks the exported API of the candidate against the previous published version with a pinned [`gorelease`](https://pkg.go.dev/golang.org/x/exp/cmd/gorelease) before it creates the tag (ADR-0017 and REL-003 in otfabric/engineering). A rejected version stops the job before *Create and push annotated tag*: nothing is tagged or published.
+
+**Previous version.** The highest exact release tag of the module (`vX.Y.Z`, or `<module-dir>/vX.Y.Z` for a nested module) in the major of its module path, compared as semantic versions. Prereleases, moving tags (`v1`, `v1.2`) and other modules' or majors' tags never count. The job fails, and never picks another base, when that tag is not an ancestor of the release commit or its `go.mod` names another module.
+
+| Situation | Base | Result |
+|---|---|---|
+| A previous version exists | that version | `gorelease -base=<previous> -version=<proposed>` |
+| No previous version (first release) | `none` | gorelease checks the module alone; the evidence records no previous version |
+| First release of a `/vN` module path | `none` | the version is `vN.0.0` |
+| `bump: major` to v2 or later without a `/vN` module path | — | fails: a new major is a module path change |
+| `bump: major` from v0 | the v0 version | `v1.0.0`, with the v0 rules below |
+
+**Results.**
+
+| `result` | Meaning | `api-compatibility: enforce` | `report` |
+|---|---|---|---|
+| `pass` | gorelease accepts the version | release | release |
+| `incompatible` | gorelease rejects it (wrong bump, or an incompatible change in v1+), or a v0 rule fails | stop, no tag | warning, release |
+| `error` | gorelease did not reach a result: not installed, base not downloadable, dirty tree | stop, no tag | warning, release |
+
+An `error` is never read as a pass and never reported as an incompatibility: the step output and the evidence keep them apart.
+
+**v0.** gorelease accepts any change against a v0 base, so the workflow applies the rules of ADR-0017 to its report: a v0 **patch** must not change the exported API at all; a v0 minor or major with incompatible changes needs a `### Breaking` heading in its `RELEASE.md` section.
+
+**Evidence.** Every run that resolved a version writes `release-evidence.json` (artifact `release-evidence`, and an asset of the GitHub release): commit, module path and directory, previous and proposed version, the gorelease version and result with the listed changes, the Go toolchain, vet, test and race results, consumer results, the recorded exceptions and baseline, the release-notes source, and what the release job does **not** run (coverage, govulncheck, lint, fuzz, interop: go-ci evidence on the same commit).
+
+**Consumers.** `consumers` lists direct dependants to build, vet and test against the candidate before tagging (`owner/repo` or `owner/repo:dir`, one per line). Each is cloned into a temporary directory with a `replace` that is never committed. A separate, read-only job runs them: the read token exists only while cloning and downloading, and consumer code builds and tests offline. Any failure stops the release and names the consumer, its revision, the version it requires and the candidate commit.
+
+**Staged adoption.** `api-compatibility: report` records the result without stopping the release. otfabric/engineering's REL-003 reports a caller in report mode or below v3.8.0 (v3.7.0 has no gate).
+
 ## Release notes via RELEASE.md
 
-Both release workflows support an optional `RELEASE.md` file in the repo root. When a section matching the new tag is found, its content is used as the GitHub Release body. Otherwise a commit-log changelog is generated automatically.
+Both release workflows support an optional `RELEASE.md` file in the repo root (for `go-package-release.yml`, in `module-dir`; a nested module's section heading is its version without the directory prefix, `## v0.3.0`). When a section matching the new tag is found, its content is used as the GitHub Release body. Otherwise a commit-log changelog is generated automatically.
 
 ```markdown
 ## v1.3.0
@@ -378,6 +410,12 @@ Fork and Dependabot runs never receive Actions secrets. Any other run without th
 | `bump` | *(required)* | `patch`, `minor`, or `major` |
 | `update-major-tag` | `false` | Maintain a moving `v1`-style tag |
 | `release-name-prefix` | `""` | Prefix for the GitHub Release title |
+| `test-exclude-regex` | `(/examples($\|/)\|/cmd($\|/))` | Packages left out of the release tests (`grep -Ev`) |
+| `module-dir` | `.` | Module to release; a nested module's tags carry the directory as prefix (`sub/v0.3.0`) |
+| `api-compatibility` | `enforce` | `enforce` stops before tagging on `incompatible` or `error`; `report` records and releases ([API compatibility gate](#api-compatibility-gate)) |
+| `gorelease-version` | `v0.0.0-20261014143641-f0251eb4aa3e` | Exact version of `golang.org/x/exp/cmd/gorelease`; never `latest` |
+| `gorelease-go-version` | `1.26` | Lowest Go minor that builds that gorelease; the newer of this and the module's `go` line is used |
+| `consumers` | `""` | Dependants built, vetted and tested against the candidate before tagging, one `owner/repo[:dir]` per line |
 
 ### go-binary-release.yml
 
@@ -400,6 +438,7 @@ Both release workflows expose outputs for downstream chaining:
 | `version` | `1.2.3` | Package, Binary |
 | `tag` | `v1.2.3` | Package, Binary |
 | `previous-tag` | `v1.2.2` | Package, Binary |
+| `api-result` | `pass` | Package |
 
 ## Required secrets
 
