@@ -4,8 +4,8 @@ Shared GitHub configuration of the OT Fabric organisation.
 
 | Path | What |
 |---|---|
-| [`.github/workflows/`](.github/workflows/README.md) | Reusable workflows: `go-ci.yml`, `go-package-release.yml`, `go-binary-release.yml` |
-| [`actions/`](actions/README.md) | Composite actions for the `*-interop` repositories |
+| [`.github/workflows/`](.github/workflows/README.md) | Reusable workflows: `go-ci.yml`, `docs-check.yml`, `pr-changes.yml`, `go-package-release.yml`, `go-binary-release.yml` |
+| [`actions/`](actions/README.md) | Composite actions: `required-gate` (the required check of a PR workflow), and the upstream check of the `*-interop` repositories |
 | `profile/` | The organisation profile page |
 | `scripts/selftest/`, `testdata/` | Selftest of the workflows (`selftest.yml`) |
 

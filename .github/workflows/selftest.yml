@@ -158,3 +158,126 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: scripts/selftest/go-version.sh
+
+  # pr-changes.yml: the classifier step on synthetic pull requests.
+  pr-changes-cases:
+    name: PR changes cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/selftest/pr-changes.sh
+
+  # actions/required-gate: every outcome of a mandatory job, every combination.
+  required-gate-cases:
+    name: Required gate cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/selftest/required-gate.sh
+
+  # The classifier on this run. A pull request here changes the paths above,
+  # none of them documentation, and a push or dispatch is no pull request: full.
+  pr-changes-live:
+    uses: ./.github/workflows/pr-changes.yml
+
+  # The gate on results GitHub produced: a documentation-only classification,
+  # a heavy job its condition skipped, and a light job that succeeded.
+  gate-fixture-docs-only:
+    name: Gate fixture (documentation only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      full: ${{ steps.classify.outputs.full }}
+    steps:
+      - id: classify
+        run: echo "full=false" >> "$GITHUB_OUTPUT"
+
+  gate-fixture-light:
+    name: Gate fixture (light check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "the light check ran"
+
+  gate-fixture-heavy:
+    name: Gate fixture (heavy check, skipped)
+    needs: gate-fixture-docs-only
+    if: needs.gate-fixture-docs-only.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: exit 1
+
+  gate-fixture-heavy-code:
+    name: Gate fixture (heavy check, code)
+    needs: pr-changes-live
+    if: needs.pr-changes-live.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "the heavy check ran"
+
+  gate-live-docs:
+    name: Required gate on a documentation-only run
+    needs: [gate-fixture-docs-only, gate-fixture-light, gate-fixture-heavy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: The skipped heavy job is not applicable, so the gate passes
+        uses: ./actions/required-gate
+        with:
+          needs: ${{ toJSON(needs) }}
+          changes-job: gate-fixture-docs-only
+          required: gate-fixture-docs-only gate-fixture-light
+          required-for-code: gate-fixture-heavy
+      - name: The same skip of a job required on every run fails
+        id: unexpected-skip
+        continue-on-error: true
+        uses: ./actions/required-gate
+        with:
+          needs: ${{ toJSON(needs) }}
+          changes-job: gate-fixture-docs-only
+          required: gate-fixture-docs-only gate-fixture-light gate-fixture-heavy
+      - name: A job with no expectation fails
+        id: undeclared
+        continue-on-error: true
+        uses: ./actions/required-gate
+        with:
+          needs: ${{ toJSON(needs) }}
+          changes-job: gate-fixture-docs-only
+          required: gate-fixture-docs-only
+          required-for-code: gate-fixture-heavy
+      - name: Both failed
+        env:
+          SKIP: ${{ steps.unexpected-skip.outcome }}
+          UNDECLARED: ${{ steps.undeclared.outcome }}
+        run: |
+          [ "$SKIP" = failure ] || { echo "::error::unexpected skip: $SKIP, want failure"; exit 1; }
+          [ "$UNDECLARED" = failure ] || { echo "::error::undeclared job: $UNDECLARED, want failure"; exit 1; }
+
+  gate-live-code:
+    name: Required gate on a full run
+    needs: [pr-changes-live, gate-fixture-light, gate-fixture-heavy-code]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: The live classification is full
+        env:
+          FULL: ${{ needs.pr-changes-live.outputs.full }}
+          REASON: ${{ needs.pr-changes-live.outputs.reason }}
+        run: |
+          echo "full=$FULL reason=$REASON"
+          [ "$FULL" = true ] && [ -n "$REASON" ]
+      - name: Every job succeeded, so the gate passes
+        uses: ./actions/required-gate
+        with:
+          needs: ${{ toJSON(needs) }}
+          changes-job: pr-changes-live
+          required: pr-changes-live gate-fixture-light
+          required-for-code: gate-fixture-heavy-code

@@ -2,7 +2,7 @@
 
 ## What this is
 
-The organisation's shared GitHub configuration: the reusable workflows `go-ci.yml`, `docs-check.yml`, `go-package-release.yml` and `go-binary-release.yml`, the composite actions for the `*-interop` repositories, the organisation profile page, and the selftest of the workflows. There is no product and no Go module of its own; the Go code under `testdata/` is fixtures. Every OT Fabric repository depends on this one, so a mistake here reaches all of them. Profile: **infrastructure**.
+The organisation's shared GitHub configuration: the reusable workflows `go-ci.yml`, `docs-check.yml`, `pr-changes.yml`, `go-package-release.yml` and `go-binary-release.yml`, the `required-gate` action (the required check of every PR workflow), the composite actions for the `*-interop` repositories, the organisation profile page, and the selftest of the workflows. There is no product and no Go module of its own; the Go code under `testdata/` is fixtures. Every OT Fabric repository depends on this one, so a mistake here reaches all of them. Profile: **infrastructure**.
 
 ## Organisation standards
 
@@ -20,12 +20,13 @@ This repository follows **otfabric/engineering policy 1.2**, profile **infrastru
 
 ## Hard rules
 
-1. Callers pin workflows by tag (`@v3.2.0`, or the floating `@v2`, `@v3`) but actions by `@main`: a merge reaches every interop repository's next run of an action, and the next tag reaches every Go repository. Treat a merge as a release.
+1. Callers pin workflows by tag (`@v3.2.0`, or the floating `@v2`, `@v3`) but the upstream actions by `@main`: a merge reaches every interop repository's next run of an action, and the next tag reaches every Go repository. Treat a merge as a release. `required-gate` is pinned by tag, with `pr-changes.yml`.
 2. A change to an input, default, job name or permission of a shared workflow is a change for every caller. Keep behaviour unchanged unless the maintainer asked for the change.
-3. A behaviour change adds a selftest case. A failing case runs the exact step script, extracted from the workflow by `scripts/selftest/extract-step.py`, never a copy.
+3. A behaviour change adds a selftest case. A failing case runs the exact step script, extracted from the workflow by `scripts/selftest/extract-step.py` (or the action's own script file), never a copy.
 4. Tools stay pinned to exact versions; shared workflows stay on least-privilege `permissions`.
 5. `go-ci.yml` runs its policy job at the repository root and fails a same-repository run without `OTFABRIC_READ_TOKEN` once `.otfabric/policy.yaml` exists. So every selftest job that leaves `run-policy` on passes the token.
 6. Selftest runs on pull requests only for the paths it lists, and always on push to `main`. A green pull request says nothing about Selftest when it touched none of them: think about what `main` will do.
+7. The required check is the gate, so it fails closed: a change to `pr-changes.yml` or `required-gate` never lets a missing, skipped, cancelled or failed mandatory job pass, nor an unknown change count as documentation.
 
 ## Commands
 
@@ -36,6 +37,8 @@ This repository follows **otfabric/engineering policy 1.2**, profile **infrastru
 | release notes extraction | `scripts/selftest/release-notes.sh` |
 | the Go version of release builds | `scripts/selftest/go-version.sh` |
 | `docs-check.yml` docsync step | `scripts/selftest/docs-check.sh` |
+| `pr-changes.yml` classification | `scripts/selftest/pr-changes.sh` |
+| `actions/required-gate` | `scripts/selftest/required-gate.sh` |
 | a workflow | the Selftest workflow, on the pull request |
 
 There is no Makefile.
