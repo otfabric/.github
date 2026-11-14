@@ -3,6 +3,7 @@
 
     pr-workflow.py plan  <workspace> [--profile P] [--format md|json]
     pr-workflow.py apply <repository> [--ref REF] [--write]
+                         [--paths-as-code FILE]... [--accept-events FILE]...
 
 plan reads every checkout in a workspace (one directory per repository, as
 otfabric/engineering scripts/audit-inventory.sh clones them) and reports, per
@@ -12,11 +13,20 @@ prepared automatically, which need a person, and why. It changes nothing.
 apply prepares one repository: the heavy workflows lose their push and
 pull_request triggers and gain workflow_call and workflow_dispatch, the light
 ones (docs-check, otfabric-policy) keep the push to the default branch, and a
-new .github/workflows/pr.yml calls them all and ends in the gate. Without
+new .github/workflows/pr.yml calls them all and ends in the gate. A schedule
+trigger stays where it is, and the inputs of workflow_dispatch are repeated
+under workflow_call with their defaults, so a called run behaves like a
+dispatch without arguments. Without
 --write it prints the plan and the new pr.yml and writes nothing. It refuses
 a repository that needs a person, and does nothing to one that already has
 the gate, so running it twice is safe. It never commits, pushes or opens a
 pull request.
+
+Two refusals can be lifted per workflow file, after a person has read it:
+--paths-as-code FILE drops a `paths:` filter (the workflow then runs on every
+pull request that is not documentation only, and no longer on the push to
+the default branch); --accept-events FILE accepts expressions that read the
+event or the ref (say why in the pull request).
 
 Workflows are read as text, not as YAML, and only the patterns below are
 handled; anything else is reported for a person to look at. Standard library
@@ -30,12 +40,21 @@ import sys
 
 GATE_NAME = "OT Fabric Required Checks"
 HERE = os.path.dirname(os.path.abspath(__file__))
-SIMPLE_TRIGGERS = {"push", "pull_request", "workflow_dispatch"}
+SIMPLE_TRIGGERS = {"push", "pull_request", "workflow_dispatch", "schedule"}
 # A converted workflow that reads one of these behaved differently on push
 # and pull_request, or on main: it now always runs as the caller's event.
 EVENT_EXPRESSIONS = re.compile(
     r"github\.event_name|github\.ref\b|github\.ref_name|github\.head_ref|github\.base_ref"
     r"|github\.event\.(before|after|head_commit|commits|pull_request)")
+# Expressions that mean the same once the workflow is called from pr.yml:
+# the guard against forks and Dependabot (the caller's event is the pull
+# request), and jobs or steps that run only on a schedule or a dispatch (a
+# called run is neither, as a push or a pull request was neither).
+SAFE_EVENT_EXPRESSIONS = [
+    re.compile(r"github\.event_name != 'pull_request' \|\| \(?github\.event\.pull_request\.head\.repo\.full_name == github\.repository"
+               r"( && github\.event\.pull_request\.user\.login != 'dependabot\[bot\]')?\)?"),
+    re.compile(r"github\.event_name == '(schedule|workflow_dispatch|pull_request)'"),
+]
 MD_LITERAL = re.compile(r'"([^"\s]+\.md)"|//go:embed\s+(\S+\.md)')
 PROFILE_NOTES = {
     "protocol-library": "Go CI and independent interop are mandatory",
@@ -111,7 +130,56 @@ def top_level_block(text, key):
     return m.group(0).rstrip() if m else None
 
 
-def classify_workflow(path, default_branch):
+def concurrency_group(text):
+    block = top_level_block(text, "concurrency")
+    if not block:
+        return None
+    m = re.search(r"^concurrency:[ \t]*(\S.*)$", block, re.M) or re.search(r"^\s+group:[ \t]*(.+)$", block, re.M)
+    return m.group(1).strip() if m else ""
+
+
+def call_inputs(dispatch):
+    """The `inputs:` of a workflow_dispatch trigger as workflow_call inputs
+    (lines), or an error string. A choice becomes a string; every input needs
+    a default, because pr.yml passes none."""
+    lines = dispatch.splitlines()
+    try:
+        i = next(k for k, l in enumerate(lines) if re.match(r"^    inputs:\s*$", l))
+    except StopIteration:
+        return []
+    inputs, current = [], None
+    for l in lines[i + 1:]:
+        if not l.strip() or l.lstrip().startswith("#"):
+            continue
+        m = re.match(r"^      ([\w-]+):\s*$", l)
+        if m:
+            current = {"name": m.group(1), "attrs": {}}
+            inputs.append(current)
+            continue
+        m = re.match(r"^        (description|type|default|required):\s*(.*)$", l)
+        if m and current is not None:
+            current["attrs"][m.group(1)] = m.group(2).strip()
+            continue
+        if re.match(r"^        options:", l) or re.match(r"^          ", l):
+            continue
+        return f"workflow_dispatch inputs in a form this tool does not read: {l.strip()!r}"
+    out = ["    inputs:"]
+    for item in inputs:
+        a = item["attrs"]
+        if "default" not in a:
+            if a.get("required", "false").strip("'\"") == "true":
+                return f"workflow_dispatch input {item['name']} is required and has no default"
+            a["default"] = "false" if a.get("type") == "boolean" else '""'
+        kind = a.get("type", "string")
+        out.append(f"      {item['name']}:")
+        if "description" in a:
+            out.append(f"        description: {a['description']}")
+        out.append(f"        type: {kind if kind in ('boolean', 'number', 'string') else 'string'}")
+        out.append(f"        default: {a['default']}")
+    return out
+
+
+def classify_workflow(path, default_branch, paths_as_code=(), accept_events=()):
     """A dict: kind (light, heavy, keep, manual), why, and for heavy and light
     the replacement `on:` block."""
     text = read(path)
@@ -134,6 +202,11 @@ def classify_workflow(path, default_branch):
     if re.search(r"^\s+tags(-ignore)?:", push, re.M):
         w.update(kind="keep", why="push of tags (a release); left as is")
         return w
+    branches = re.search(r"^\s+branches:\s*(.+)$", push, re.M)
+    if "pull_request" not in triggers and branches and not re.search(
+            r"['\"\[\s,](\*\*?|%s)['\"\]\s,]" % re.escape(default_branch), " " + branches.group(1) + " "):
+        w.update(kind="keep", why="push of other branches only (" + branches.group(1).strip() + "); left as is")
+        return w
     if re.search(r"codeql|github/codeql-action", text):
         w.update(kind="keep", why="code scanning keeps its default-branch analysis; left as is")
         return w
@@ -142,33 +215,65 @@ def classify_workflow(path, default_branch):
     extra = set(triggers) - SIMPLE_TRIGGERS
     if extra:
         reasons.append("other triggers: " + ", ".join(sorted(extra)))
-    if re.search(r"^\s+inputs:", triggers.get("workflow_dispatch", ""), re.M):
-        reasons.append("workflow_dispatch has inputs, which workflow_call would need too")
+    dispatch = triggers.get("workflow_dispatch", "")
+    mirrored = call_inputs(dispatch)
+    if isinstance(mirrored, str):
+        reasons.append(mirrored)
+        mirrored = []
+    if "github.event.inputs." in text:
+        reasons.append("reads github.event.inputs, which is empty once called (inputs.<name> works for both)")
+    if block[2] and not all(re.match(r"^  [a-z_]+:", l) for l in triggers.values()):
+        reasons.append("an `on:` block that is not indented by two spaces")
     for trig in (push, pr):
         if re.search(r"^\s+paths:", trig, re.M):
-            reasons.append("a `paths:` filter: in pr.yml it would run on every code pull request")
+            if name in paths_as_code:
+                w["notes"].append("`paths:` filter dropped: runs on every pull request that is not documentation only")
+            else:
+                reasons.append("a `paths:` filter: in pr.yml it would run on every code pull request")
             break
         if re.search(r"^\s+paths-ignore:", trig, re.M) and not re.search(r"paths-ignore:\s*\[\s*['\"]\*\*/\*\.md['\"]\s*\]", trig):
             reasons.append("a paths-ignore filter other than Markdown")
             break
-    if top_level_block(text, "concurrency"):
-        reasons.append("its own concurrency group may equal pr.yml's (github.workflow is the caller's name)")
+    group = concurrency_group(text)
+    w["group"] = group
+    if group is not None and not re.match(r"^['\"]?[A-Za-z][\w-]*", group):
+        # github.workflow is the caller's name in a called workflow: two called
+        # workflows whose group starts with it share the group, and one cancels
+        # the other. A group that starts with a name of its own is safe.
+        reasons.append("its concurrency group has no name of its own (github.workflow is the caller's name once called)")
     if not light:
-        # run-name is ignored when the workflow is called.
-        m = EVENT_EXPRESSIONS.search(re.sub(r"^run-name:.*$", "", text, flags=re.M))
-        if m:
+        # run-name is ignored when the workflow is called, and the workflow's own
+        # concurrency group may name the ref: it is the pull request's then.
+        rest = re.sub(r"^run-name:.*$", "", text, flags=re.M)
+        conc = top_level_block(rest, "concurrency")
+        if conc:
+            rest = rest.replace(conc, "")
+        for safe in SAFE_EVENT_EXPRESSIONS:
+            rest = safe.sub("", rest)
+        m = EVENT_EXPRESSIONS.search(rest)
+        if m and name in accept_events:
+            w["notes"].append(f"reads {m.group(0)}: accepted by --accept-events")
+        elif m:
             reasons.append(f"reads {m.group(0)}, which is the caller's pull_request event once called")
     if reasons:
         w.update(kind="manual", why="; ".join(reasons))
         return w
+    tail = (triggers.get("schedule", "")
+            + "  workflow_call:\n" + "".join(l + "\n" for l in mirrored)
+            + (dispatch if dispatch.endswith("\n") or not dispatch else dispatch + "\n" or "")
+            + ("" if dispatch else "  workflow_dispatch:\n"))
     if light:
-        w.update(kind="light", on=f"on:\n  push:\n    branches: [{default_branch}]\n  workflow_call:\n  workflow_dispatch:\n")
+        w.update(kind="light", on=f"on:\n  push:\n    branches: [{default_branch}]\n" + tail)
         w["why"] = "light check: runs on every pull request and every push to " + default_branch
         if "push" not in triggers:
-            w["on"] = "on:\n  workflow_call:\n  workflow_dispatch:\n"
+            w["on"] = "on:\n" + tail
     else:
-        w.update(kind="heavy", on="on:\n  workflow_call:\n  workflow_dispatch:\n",
+        w.update(kind="heavy", on="on:\n" + tail,
                  why="heavy: once per pull request revision, not on branch pushes or main")
+    if "schedule" in triggers:
+        w["notes"].append("schedule kept")
+    if mirrored:
+        w["notes"].append("workflow_dispatch inputs repeated under workflow_call")
     return w
 
 
@@ -178,14 +283,28 @@ def job_id(name):
 
 
 def permissions_lines(text):
+    """The permissions the calling job grants: the workflow's own, joined with
+    those its jobs ask for. A called job may not ask for more than its caller
+    grants, whether or not its `if:` lets it run."""
     block = top_level_block(text, "permissions")
-    if not block:
-        return None
-    first, *rest = block.splitlines()
-    inline = first.split(":", 1)[1].strip()
-    if inline:
+    rank = {"none": 0, "read": 1, "write": 2}
+    scopes, inline = {}, None
+    if block:
+        first, *rest = block.splitlines()
+        inline = first.split(":", 1)[1].split("#")[0].strip() or None
+        for l in rest:
+            m = re.match(r"^\s+([\w-]+):\s*(read|write|none)", l)
+            if m:
+                scopes[m.group(1)] = m.group(2)
+    for m in re.finditer(r"^    permissions:[ \t]*\n((?:      .*\n)+)", text, re.M):
+        for scope, level in re.findall(r"^      ([\w-]+):\s*(read|write|none)", m.group(1), re.M):
+            if rank[level] > rank[scopes.get(scope, "none")]:
+                scopes[scope] = level
+    if inline and not scopes:
         return [f"    permissions: {inline}"]
-    return ["    permissions:"] + ["    " + l for l in rest if l.strip() and not l.lstrip().startswith("#")]
+    if not scopes:
+        return None
+    return ["    permissions:"] + [f"      {k}: {v}" for k, v in scopes.items()]
 
 
 def needs_secrets(text):
@@ -222,7 +341,7 @@ def default_branch_of(repo):
     return "main"
 
 
-def analyse(repo, exceptions):
+def analyse(repo, exceptions, paths_as_code=(), accept_events=()):
     name = os.path.basename(os.path.normpath(repo))
     wdir = os.path.join(repo, ".github", "workflows")
     files = sorted(f for f in os.listdir(wdir) if f.endswith((".yml", ".yaml"))) if os.path.isdir(wdir) else []
@@ -238,9 +357,20 @@ def analyse(repo, exceptions):
         return r
     branch = default_branch_of(repo)
     for f in files:
-        r["workflows"].append(classify_workflow(os.path.join(wdir, f), branch))
+        r["workflows"].append(classify_workflow(os.path.join(wdir, f), branch, paths_as_code, accept_events))
     heavy = [w for w in r["workflows"] if w["kind"] == "heavy"]
     light = [w for w in r["workflows"] if w["kind"] == "light"]
+    manual = [w for w in r["workflows"] if w["kind"] == "manual"]
+    groups = {}
+    for w in heavy + light:
+        if w.get("group"):
+            groups.setdefault(w["group"], []).append(w)
+    for group, ws in groups.items():
+        if len(ws) > 1:
+            for w in ws:
+                w.update(kind="manual", why=f"shares the concurrency group {group} with another called workflow")
+    heavy = [w for w in heavy if w["kind"] == "heavy"]
+    light = [w for w in light if w["kind"] == "light"]
     manual = [w for w in r["workflows"] if w["kind"] == "manual"]
     if not heavy and not light and not manual:
         r.update(status="no-ci", why=["no workflow runs on push or pull_request"])
@@ -258,11 +388,15 @@ def analyse(repo, exceptions):
     return r
 
 
+def add_code_paths(r, extra):
+    r["code_paths"] = list(r.get("code_paths", [])) + [p for p in extra if p not in r.get("code_paths", [])]
+
+
 def render_pr_yml(r, ref):
     jobs, required, for_code = [], ["changes"], []
     changes = [f"  changes:\n    uses: otfabric/.github/.github/workflows/pr-changes.yml@{ref}\n"]
     if r["code_paths"]:
-        changes.append("    with:\n      # Go code reads these Markdown files: they count as code.\n      code-paths: |\n")
+        changes.append("    with:\n      # Code reads or generates these Markdown files: they count as code.\n      code-paths: |\n")
         changes += [f"        {p}\n" for p in r["code_paths"]]
     jobs.append("".join(changes))
     for w in r["workflows"]:
@@ -338,7 +472,8 @@ def cmd_plan(args):
 
 
 def cmd_apply(args):
-    r = analyse(args.repository, load_exceptions())
+    r = analyse(args.repository, load_exceptions(), args.paths_as_code, args.accept_events)
+    add_code_paths(r, args.code_path)
     print(f"{r['repo']} ({r['profile']}): {r['status']}")
     for why in r["why"]:
         print(f"  - {why}")
@@ -350,6 +485,8 @@ def cmd_apply(args):
         if w["kind"] in ("light", "heavy"):
             print(f"  {w['file']}: {w['kind']}, triggers {', '.join(w['triggers'])} -> "
                   f"{', '.join(re.findall(r'^  ([a-z_]+):', w['on'], re.M))}")
+            for note in w["notes"]:
+                print(f"    {note}")
         else:
             print(f"  {w['file']}: {w['kind']} ({w['why']})")
     if r["code_paths"]:
@@ -378,8 +515,14 @@ def main():
     p.add_argument("--format", choices=["md", "json"], default="md")
     a = sub.add_parser("apply")
     a.add_argument("repository")
-    a.add_argument("--ref", default="v3.7.0", help="otfabric/.github ref for pr-changes.yml and required-gate")
+    a.add_argument("--ref", default="v3.8.0", help="otfabric/.github ref for pr-changes.yml and required-gate")
     a.add_argument("--write", action="store_true", help="write the files (default: dry run)")
+    a.add_argument("--paths-as-code", action="append", default=[], metavar="FILE",
+                   help="workflow file whose `paths:` filter may be dropped (repeatable)")
+    a.add_argument("--code-path", action="append", default=[], metavar="PATTERN",
+                   help="a code-paths pattern to add to the suggested ones (repeatable)")
+    a.add_argument("--accept-events", action="append", default=[], metavar="FILE",
+                   help="workflow file whose event or ref expressions a person has checked (repeatable)")
     args = ap.parse_args()
     return cmd_plan(args) if args.cmd == "plan" else cmd_apply(args)
 

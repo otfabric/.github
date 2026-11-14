@@ -30,17 +30,35 @@ Workflows are sorted into:
 
 - **heavy**: `push`/`pull_request` workflows. They become `workflow_call` + `workflow_dispatch` and run in `pr.yml` unless the change is documentation only.
 - **light**: `docs-check.yml` callers and `policy.yml`. They keep the push to the default branch and run on every pull request.
-- **kept**: schedule, dispatch, tag-push releases, code scanning, workflows that are already reusable.
+- **kept**: schedule-only, dispatch-only, tag-push releases, pushes of other branches only (`soak/**`), code scanning, workflows that are already reusable.
+
+What a converted workflow keeps:
+
+- **A `schedule` trigger** stays next to `workflow_call`.
+- **`workflow_dispatch` inputs** stay, and are repeated under `workflow_call` with their defaults (a `choice` becomes a `string`), so a called run behaves like a dispatch without arguments. `inputs.<name>` reads both.
+- **A concurrency group with a name of its own** (`ci-${{ github.ref }}`) stays: in a called run the ref is the pull request's, and the name keeps it apart from the other called workflows.
+- **Permissions:** the calling job in `pr.yml` grants the workflow's own permissions joined with those its jobs ask for. A called job may not ask for more than its caller grants, whether or not its `if:` lets it run.
+- **Expressions that mean the same once called:** the guard against forks and Dependabot, and `github.event_name == 'schedule'`, `'workflow_dispatch'` or `'pull_request'`.
 
 A repository is `manual` when a workflow has:
 
-- other triggers;
-- `workflow_dispatch` inputs;
+- triggers other than push, pull_request, schedule and dispatch;
+- a required `workflow_dispatch` input without a default, or `github.event.inputs.<name>` (empty once called);
 - a `paths:` filter (in `pr.yml` it would run on every code pull request);
-- its own `concurrency` group (`github.workflow` is the caller's name, so a group of the same form deadlocks);
-- an expression that reads the event or ref (`github.ref`, `github.event_name`, `github.event.pull_request`…), which once the workflow is called is always the caller's `pull_request` event.
+- a `concurrency` group without a name of its own (`${{ github.workflow }}-…`: that is the caller's name once called, so two called workflows share the group and one cancels the other), or the same group as another called workflow;
+- another expression that reads the event or ref (`github.ref == 'refs/heads/main'`, `github.event_name == 'push'`…), which once the workflow is called is always the caller's `pull_request` event;
+- no light check at all.
 
-`plan` also suggests `code-paths`: Markdown that Go code names by a path relative to its package, or embeds.
+Two refusals can be lifted per workflow file, after a person has read it:
+
+| Flag | Lifts | Say in the pull request |
+|---|---|---|
+| `--paths-as-code FILE` | the `paths:` filter: the workflow runs on every pull request that is not documentation only, and no longer on the push to the default branch | what the filter covered |
+| `--accept-events FILE` | the event or ref expressions | why each still holds when called |
+
+`--code-path PATTERN` adds a `code-paths` pattern to the suggested ones, for Markdown a workflow generates or checks (`docs/reference/*`).
+
+`plan` also suggests `code-paths`: Markdown that Go code names by a path relative to its package, or embeds. Check each suggestion.
 
 The profile decides what must be gated, not the tool. The tool carries over what each repository already runs. So a website gets no Go CI, and an information model gets no interop.
 
@@ -56,7 +74,11 @@ git diff                                                             # only on: 
 
 Then, by hand:
 
-1. Update the repository's TESTING.md/CONTRIBUTING.md ("When CI runs", as in go-mms).
+1. Update the repository's TESTING.md/CONTRIBUTING.md ("When CI runs", as in go-mms), and every sentence that says CI runs "on every push".
+   - Move the pins in the same change: `go-ci.yml`, `docs-check.yml` and the release workflows to the tag of `pr-changes.yml`, and the checker to the tag the policy pin needs.
+   - otfabric-policy runs in the light check. Set `run-policy: false` on the go-ci calls, or it runs twice on a pull request and never on `main`.
+   - A repository-local `policy.yml` must not skip its only job for a fork or Dependabot pull request: a skipped job fails the required check. Skip the steps instead, with a notice, as go-ci and docs-check do.
+   - Do not commit what a local build left behind: `go build ./...` writes a binary into a module that holds a single main package.
 2. Commit, push, and open a **draft** pull request.
 3. On that pull request, check:
    - `OT Fabric Required Checks` reports, with that exact name;
@@ -70,6 +92,8 @@ A second `apply` on a prepared repository reports `migrated` and changes nothing
 ## Order
 
 Pilot one repository per profile before any broad adoption. Representatives, from the plan of 2026-11-14 (local workspace):
+
+The rollout of 2026-11-14 went through every repository on otfabric.io/projects in dependency order; otfabric/engineering `docs/adoption/pr-only-ci.md` has the result. The table below is the plan it started from.
 
 | Profile | Pilot | Status then |
 |---|---|---|
