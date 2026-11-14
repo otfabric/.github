@@ -1,0 +1,13 @@
+name: Docs
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    uses: otfabric/.github/.github/workflows/docs-check.yml@v3.6.0
+    secrets: inherit

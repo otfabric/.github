@@ -36,6 +36,7 @@ This repository follows **otfabric/engineering policy 1.2**, profile **infrastru
 | `go-ci.yml` policy steps | `scripts/selftest/policy.sh` |
 | release notes extraction | `scripts/selftest/release-notes.sh` |
 | the Go version of release builds | `scripts/selftest/go-version.sh` |
+| `scripts/rollout/pr-workflow.py` | `scripts/selftest/rollout.sh` |
 | `docs-check.yml` docsync step | `scripts/selftest/docs-check.sh` |
 | `pr-changes.yml` classification | `scripts/selftest/pr-changes.sh` |
 | `actions/required-gate` | `scripts/selftest/required-gate.sh` |

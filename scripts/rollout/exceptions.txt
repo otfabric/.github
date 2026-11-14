@@ -1,0 +1,4 @@
+# Repositories the PR workflow rollout leaves alone, one per line:
+#   <repository>: <reason>
+# Remove a line to bring the repository back into the plan.
+.github: Selftest is path-filtered on pull requests and runs on every push to main by design (AGENTS.md rule 6); its gate is a separate decision
