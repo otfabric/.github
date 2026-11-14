@@ -3,8 +3,11 @@
 # Go Package Release — Reusable Workflow
 #
 # Creates a semver-tagged release for a Go module (library / package).
-# Validates module integrity and runs tests (including race detector) before
-# tagging. Optionally reads hand-written release notes from a RELEASE.md file.
+# Validates module integrity, runs tests (including the race detector) and
+# checks API compatibility against the previous published version with a
+# pinned gorelease before it creates the tag (ADR-0017 in otfabric/engineering,
+# REL-003). Optionally builds and tests direct consumers against the candidate.
+# Reads hand-written release notes from RELEASE.md.
 #
 # RELEASE.md format (optional):
 #
@@ -15,14 +18,14 @@
 #   ## v1.1.0
 #   ...
 #
-# When a matching section is found for the new tag, its content is used as the
-# GitHub release body. Otherwise, a commit-log changelog is generated.
+# When a matching section is found for the new version, its content is used as
+# the GitHub release body. Otherwise, a commit-log changelog is generated.
 #
 # Caller example:
 #
 #   jobs:
 #     release:
-#       uses: otfabric/.github/.github/workflows/go-package-release.yml@v2
+#       uses: otfabric/.github/.github/workflows/go-package-release.yml@v3.8.0
 #       with:
 #         bump: minor
 #       secrets:
@@ -69,23 +72,67 @@ on:
         required: false
         type: boolean
         default: false
+      module-dir:
+        description: >-
+          Directory of the module to release, relative to the repository root.
+          A nested module's tags carry the directory as prefix
+          (tlsccm/v0.3.0) and only that module's tags are considered.
+        required: false
+        type: string
+        default: "."
+      api-compatibility:
+        description: >-
+          enforce (default): stop before tagging when gorelease rejects the
+          version, when it cannot run, or when a v0 rule is broken. report:
+          record the same result in the summary and the evidence file and
+          release anyway (staged adoption only; REL-003 reports it).
+        required: false
+        type: string
+        default: enforce
+      gorelease-version:
+        description: >-
+          Exact module version of golang.org/x/exp/cmd/gorelease. Never latest:
+          moving it changes what the gate accepts.
+        required: false
+        type: string
+        default: v0.0.0-20261014143641-f0251eb4aa3e
+      gorelease-go-version:
+        description: >-
+          Lowest Go minor that builds gorelease at gorelease-version (x/exp
+          requires go 1.26.0 at the default). The newer of this and the
+          module's go directive builds and runs it.
+        required: false
+        type: string
+        default: "1.26"
+      consumers:
+        description: >-
+          Direct consumers built, vetted and tested against the candidate
+          before tagging, one per line: owner/repo or owner/repo:dir. Each is
+          cloned into a temporary directory with a local replace that is never
+          committed. Empty: no consumer job.
+        required: false
+        type: string
+        default: ""
     outputs:
       version:
         description: "Released version without v prefix (e.g. 1.2.3)."
         value: ${{ jobs.release-package.outputs.version }}
       tag:
-        description: "Git tag created (e.g. v1.2.3)."
+        description: "Git tag created (e.g. v1.2.3, or sub/v1.2.3 for a nested module)."
         value: ${{ jobs.release-package.outputs.tag }}
       previous-tag:
-        description: "Previous semver tag before this release (e.g. v1.2.2)."
+        description: "Previous release tag of this module (v0.0.0, prefixed for a nested module, when there is none)."
         value: ${{ jobs.release-package.outputs.previous_tag }}
+      api-result:
+        description: "pass | incompatible | error: the API compatibility result (a non-pass result releases only with api-compatibility: report)."
+        value: ${{ jobs.release-package.outputs.api_result }}
     secrets:
       OTFABRIC_READ_TOKEN:
         description: "PAT with read access to private github.com/otfabric/* modules."
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   GOPRIVATE: github.com/otfabric/*
@@ -95,14 +142,185 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-package:
-    name: Release
+  consumers:
+    name: Consumers
+    if: inputs.consumers != ''
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    # Consumer code runs in this job: it can only read, the checkout keeps no
+    # credentials, and the read token exists only in the fetch step, which
+    # runs no consumer code (clone, go mod download, go list).
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          path: candidate
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+
+      - name: Fetch consumers
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+          CONSUMERS: ${{ inputs.consumers }}
+          MODULE_DIR: ${{ inputs.module-dir }}
+          CANDIDATE: ${{ github.workspace }}/candidate
+          CONSUMER_BASE_URL: https://github.com
+        run: |
+          set -uo pipefail
+          # Clone each consumer into RUNNER_TEMP, point it at the candidate with
+          # a local replace (never committed), and download what it needs.
+          # Nothing here runs consumer code. One line per consumer goes to
+          # consumers.txt: n|repository|dir|revision|requires|state.
+          if [ -n "$TOKEN" ]; then
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="url.https://x-access-token:${TOKEN}@github.com/.insteadOf"
+            export GIT_CONFIG_VALUE_0="https://github.com/"
+          fi
+          dir="${MODULE_DIR#./}"; dir="${dir%/}"; [ -n "$dir" ] || dir=.
+          cand="$CANDIDATE/$dir"
+          [ -f "$cand/go.mod" ] || { echo "::error::no go.mod in module-dir '$MODULE_DIR'"; exit 1; }
+          path=$(awk '$1 == "module" { gsub(/"/, "", $2); print $2; exit }' "$cand/go.mod")
+          work="$RUNNER_TEMP/consumers"; mkdir -p "$work"
+          manifest="$work/consumers.txt"; : > "$manifest"
+          echo "$path" > "$work/module-path"
+          n=0
+          while IFS= read -r line || [ -n "$line" ]; do
+            line=$(printf '%s' "$line" | sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            [ -n "$line" ] || continue
+            n=$((n + 1))
+            if ! printf '%s' "$line" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(:[A-Za-z0-9_./-]+)?$' || printf '%s' "$line" | grep -q '\.\.'; then
+              echo "::error::consumer '$line': expected owner/repo or owner/repo:dir"
+              printf '%s|%s||||%s\n' "$n" "${line//|/}" "invalid entry" >> "$manifest"; continue
+            fi
+            repo=${line%%:*}; sub=.
+            [ "$repo" = "$line" ] || sub=${line#*:}
+            dest="$work/$n"; log="$work/$n.fetch.log"
+            if ! git clone --quiet --depth 1 "$CONSUMER_BASE_URL/$repo" "$dest" > "$log" 2>&1; then
+              echo "::error::consumer $repo: clone failed"; cat "$log"
+              printf '%s|%s|%s|||%s\n' "$n" "$repo" "$sub" "clone failed" >> "$manifest"; continue
+            fi
+            rev=$(git -C "$dest" rev-parse HEAD)
+            if [ ! -f "$dest/$sub/go.mod" ]; then
+              echo "::error::consumer $repo@$rev: no go.mod in $sub"
+              printf '%s|%s|%s|%s||%s\n' "$n" "$repo" "$sub" "$rev" "no go.mod" >> "$manifest"; continue
+            fi
+            req=$(awk -v p="$path" '
+              /^require[[:space:]]*\(/ { block = 1; next }
+              block && /^\)/ { block = 0; next }
+              block && $1 == p { print $2; exit }
+              $1 == "require" && $2 == p { print $3; exit }' "$dest/$sub/go.mod")
+            if [ -z "$req" ]; then
+              echo "::error::consumer $repo@$rev ($sub) does not require $path"
+              printf '%s|%s|%s|%s||%s\n' "$n" "$repo" "$sub" "$rev" "does not require $path" >> "$manifest"; continue
+            fi
+            state=fetched
+            (
+              cd "$dest/$sub" &&
+                go mod edit -replace="$path=$cand" &&
+                GOWORK=off GOFLAGS=-mod=mod go mod download &&
+                GOWORK=off GOFLAGS=-mod=mod go list -deps -test ./... > /dev/null
+            ) > "$log" 2>&1 || state="fetch failed"
+            if [ "$state" != fetched ]; then
+              echo "::error::consumer $repo@$rev ($sub): resolving its dependencies against the candidate failed"; tail -n 40 "$log"
+            fi
+            printf '%s|%s|%s|%s|%s|%s\n' "$n" "$repo" "$sub" "$rev" "$req" "$state" >> "$manifest"
+          done <<< "$CONSUMERS"
+          [ "$n" -gt 0 ] || { echo "::error::consumers is set but lists no consumer"; exit 1; }
+          exit 0
+
+      - name: Build and test consumers
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          # Build, vet and test every fetched consumer offline, without
+          # credentials. Every consumer is reported; the step fails if any
+          # consumer failed here or in the fetch step.
+          work="$RUNNER_TEMP/consumers"
+          manifest="$work/consumers.txt"
+          path=$(cat "$work/module-path")
+          results="$RUNNER_TEMP/consumer-results.jsonl"; : > "$results"
+          record() { # repository dir revision requires status log-file
+            python3 -c '
+          import json, os, sys
+          k = ["repository", "dir", "revision", "requires", "status"]
+          r = dict(zip(k, sys.argv[1:6]), candidate=os.environ["CANDIDATE_SHA"])
+          r["log_tail"] = open(sys.argv[6]).read().splitlines()[-20:] if os.path.exists(sys.argv[6]) else []
+          print(json.dumps(r))' "$@" >> "$results"
+          }
+          failed=0
+          while IFS='|' read -r n repo sub rev req state; do
+            log="$work/$n.log"
+            if [ "$state" != fetched ]; then
+              record "$repo" "$sub" "$rev" "$req" "$state" "$work/$n.fetch.log"; failed=1; continue
+            fi
+            status=pass
+            (
+              cd "$work/$n/$sub" &&
+                GOWORK=off GOPROXY=off GOFLAGS=-mod=mod go build ./... &&
+                GOWORK=off GOPROXY=off GOFLAGS=-mod=mod go vet ./... &&
+                GOWORK=off GOPROXY=off GOFLAGS=-mod=mod go test -count=1 ./...
+            ) > "$log" 2>&1 || status=failed
+            if [ "$status" = pass ]; then
+              echo "consumer $repo@$rev ($sub, requires $path $req): build, vet and test pass against $CANDIDATE_SHA"
+            else
+              echo "::error::consumer $repo@$rev ($sub, requires $path $req) fails against $path at $CANDIDATE_SHA"
+              tail -n 40 "$log"
+              failed=1
+            fi
+            record "$repo" "$sub" "$rev" "$req" "$status" "$log"
+          done < "$manifest"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## Consumers of $path at $CANDIDATE_SHA"
+              echo
+              echo "| Consumer | Dir | Revision | Requires | Result |"
+              echo "|---|---|---|---|---|"
+              python3 -c '
+          import json, sys
+          for l in open(sys.argv[1]):
+              r = json.loads(l)
+              print("| %s | %s | %s | %s | %s |" % (r["repository"], r["dir"], r["revision"][:12], r["requires"], r["status"]))' "$results"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$failed"
+
+      - name: Upload consumer results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: consumer-results
+          path: ${{ runner.temp }}/consumer-results.jsonl
+          if-no-files-found: ignore
+
+  release-package:
+    name: Release
+    needs: consumers
+    # Runs when the consumer job passed or was not requested; never after a
+    # consumer failure.
+    if: ${{ !cancelled() && (needs.consumers.result == 'success' || needs.consumers.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.module-dir }}
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       previous_tag: ${{ steps.version.outputs.previous_tag }}
+      api_result: ${{ steps.api.outputs.result }}
 
     steps:
       - name: Checkout
@@ -113,6 +331,7 @@ jobs:
 
       - name: Verify default branch
         shell: bash
+        working-directory: .
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           CURRENT_REF: ${{ github.ref_name }}
@@ -123,13 +342,76 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve module
+        id: module
+        shell: bash
+        working-directory: .
+        env:
+          MODULE_DIR: ${{ inputs.module-dir }}
+          GORELEASE_GO: ${{ inputs.gorelease-go-version }}
+        run: |
+          set -euo pipefail
+          dir="${MODULE_DIR#./}"; dir="${dir%/}"; [ -n "$dir" ] || dir=.
+          case "/$dir/" in
+            //*|*/../*) echo "::error::module-dir must be a relative path inside the repository, got '$MODULE_DIR'"; exit 1 ;;
+          esac
+          printf '%s' "$dir" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "::error::module-dir '$MODULE_DIR' has characters outside [A-Za-z0-9._/-]"; exit 1; }
+          [ -f "$dir/go.mod" ] || { echo "::error::no go.mod in module-dir '$MODULE_DIR'"; exit 1; }
+          path=$(awk '$1 == "module" { gsub(/"/, "", $2); print $2; exit }' "$dir/go.mod")
+          [ -n "$path" ] || { echo "::error::no module directive in $dir/go.mod"; exit 1; }
+          prefix=""; [ "$dir" = . ] || prefix="$dir/"
+          path_major=0
+          if [[ "$path" =~ /v([0-9]+)$ ]]; then
+            path_major=${BASH_REMATCH[1]}
+            [ "$path_major" -ge 2 ] || { echo "::error::module path $path: a /vN suffix starts at /v2"; exit 1; }
+          fi
+          go_minor=$(sed -nE 's/^go[[:space:]]+([0-9]+\.[0-9]+).*/\1/p' "$dir/go.mod" | head -1)
+          [ -n "$go_minor" ] || { echo "::error::no go directive in $dir/go.mod"; exit 1; }
+          printf '%s' "$GORELEASE_GO" | grep -Eq '^[0-9]+\.[0-9]+$' || { echo "::error::gorelease-go-version must be a Go minor such as 1.26, got '$GORELEASE_GO'"; exit 1; }
+          gorelease_go=$(printf '%s\n%s\n' "$GORELEASE_GO" "$go_minor" | sort -t. -k1,1n -k2,2n | tail -1)
+          {
+            echo "dir=$dir"
+            echo "path=$path"
+            echo "prefix=$prefix"
+            echo "path_major=$path_major"
+            echo "go_minor=$go_minor"
+            echo "gorelease_go=$gorelease_go"
+          } >> "$GITHUB_OUTPUT"
+          echo "module $path in $dir (tag prefix '${prefix}', go $go_minor; gorelease built with Go $gorelease_go)"
+
+      - name: Set up Go for gorelease
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ steps.module.outputs.gorelease_go }}
+          check-latest: true
+          cache: false
+
+      - name: Install gorelease
+        id: gorelease
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          GORELEASE_VERSION: ${{ inputs.gorelease-version }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$GORELEASE_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::gorelease-version must be an exact module version, got '$GORELEASE_VERSION' (never latest or a branch)"
+            exit 1
+          fi
+          GOBIN="$RUNNER_TEMP/gorelease-bin" GOFLAGS= GOWORK=off go install "golang.org/x/exp/cmd/gorelease@$GORELEASE_VERSION"
+          {
+            echo "path=$RUNNER_TEMP/gorelease-bin/gorelease"
+            echo "goroot=$(go env GOROOT)"
+            echo "go=$(go env GOVERSION)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ inputs.module-dir }}/go.mod
           cache: true
           cache-dependency-path: |
-            go.sum
+            ${{ inputs.module-dir }}/go.sum
             **/go.sum
 
       - name: Configure private module access
@@ -154,6 +436,7 @@ jobs:
         run: go mod verify
 
       - name: go vet
+        id: vet
         if: inputs.run-vet
         shell: bash
         run: go vet ./...
@@ -173,18 +456,26 @@ jobs:
           printf 'list=%s\n' "${pkgs[*]}" >> "$GITHUB_OUTPUT"
 
       - name: Test
+        id: test
         shell: bash
         run: go test -count=1 -timeout=120s ${{ steps.pkgs.outputs.list }}
 
       - name: Race test
+        id: race
         shell: bash
         run: go test -count=1 -timeout=120s -race ${{ steps.pkgs.outputs.list }}
 
       - name: Determine next version
         id: version
         shell: bash
+        working-directory: .
         env:
           BUMP: ${{ inputs.bump }}
+          MODULE_DIR: ${{ steps.module.outputs.dir }}
+          MODULE_PATH: ${{ steps.module.outputs.path }}
+          PREFIX: ${{ steps.module.outputs.prefix }}
+          PATH_MAJOR: ${{ steps.module.outputs.path_major }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -196,31 +487,69 @@ jobs:
               ;;
           esac
 
-          previous_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)"
-          if [ -z "$previous_tag" ]; then
-            previous_tag="v0.0.0"
-          fi
+          # The previous published version: the highest exact release tag
+          # (<prefix>vX.Y.Z, no prerelease, no moving tag) of this module in the
+          # major of its module path. Never another module's or major's tag.
+          prefix_re=$(printf '%s' "$PREFIX" | sed 's/[.]/\\./g')
+          re="^${prefix_re}v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+          tags=$(git tag -l "${PREFIX}v*" | grep -E "$re" || true)
+          previous_tag=$(printf '%s\n' "$tags" | while read -r t; do
+            [ -n "$t" ] || continue
+            v=${t#"$PREFIX"v}; IFS=. read -r a b c <<< "$v"
+            if [ "$PATH_MAJOR" -ge 2 ]; then [ "$a" = "$PATH_MAJOR" ] || continue; else [ "$a" -le 1 ] || continue; fi
+            echo "$a $b $c $t"
+          done | sort -k1,1n -k2,2n -k3,3n | tail -1 | awk '{ print $4 }')
 
-          previous_version="${previous_tag#v}"
+          if [ -n "$previous_tag" ]; then
+            previous_version=${previous_tag#"$PREFIX"v}
+            if ! git merge-base --is-ancestor "refs/tags/$previous_tag" "$SHA"; then
+              echo "::error::The previous release $previous_tag is not an ancestor of $SHA. Refusing to compare with another version; fix the history or the tag."
+              exit 1
+            fi
+            gomod="go.mod"; [ "$MODULE_DIR" = . ] || gomod="$MODULE_DIR/go.mod"
+            base_path=$(git show "refs/tags/$previous_tag:$gomod" 2>/dev/null | awk '$1 == "module" { gsub(/"/, "", $2); print $2; exit }' || true)
+            if [ "$base_path" != "$MODULE_PATH" ]; then
+              echo "::error::$previous_tag has module path '${base_path:-<no $gomod>}', not $MODULE_PATH. Refusing to compare with another module."
+              exit 1
+            fi
+            base="v$previous_version"
+          else
+            # First release of this module, or of this major.
+            if [ "$PATH_MAJOR" -ge 2 ]; then previous_version="$PATH_MAJOR.0.0"; else previous_version="0.0.0"; fi
+            previous_tag="${PREFIX}v0.0.0"
+            base=none
+          fi
           IFS='.' read -r major minor patch <<< "$previous_version"
 
-          case "$BUMP" in
-            major) major=$((major + 1)); minor=0; patch=0 ;;
-            minor) minor=$((minor + 1)); patch=0 ;;
-            patch) patch=$((patch + 1)) ;;
-          esac
+          if [ "$base" = none ] && [ "$PATH_MAJOR" -ge 2 ]; then
+            major=$PATH_MAJOR; minor=0; patch=0 # the first vN release is vN.0.0
+          else
+            case "$BUMP" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+            esac
+          fi
+          if [ "$major" -ge 2 ] && [ "$major" != "$PATH_MAJOR" ]; then
+            echo "::error::v$major.0.0 needs the module path to end in /v$major ($MODULE_PATH does not). A new major is a module path change, decided by an ADR in the repository."
+            exit 1
+          fi
 
           version="${major}.${minor}.${patch}"
-          tag="v${version}"
-          major_tag="v${major}"
-
-          echo "previous_tag=$previous_tag"       >> "$GITHUB_OUTPUT"
-          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
-          echo "version=$version"                 >> "$GITHUB_OUTPUT"
-          echo "tag=$tag"                         >> "$GITHUB_OUTPUT"
-          echo "major_tag=$major_tag"             >> "$GITHUB_OUTPUT"
+          {
+            echo "previous_tag=$previous_tag"
+            echo "previous_version=$previous_version"
+            echo "base=$base"
+            echo "base_major=${previous_version%%.*}"
+            echo "version=$version"
+            echo "version_tag=v$version"
+            echo "tag=${PREFIX}v$version"
+            echo "major_tag=${PREFIX}v$major"
+          } >> "$GITHUB_OUTPUT"
+          echo "module $MODULE_PATH: previous $previous_tag (base $base), proposed ${PREFIX}v$version"
 
       - name: Fail if tag already exists
+        id: tagcheck
         shell: bash
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -231,12 +560,89 @@ jobs:
             exit 1
           fi
 
+      - name: API compatibility
+        id: api
+        shell: bash
+        env:
+          MODE: ${{ inputs.api-compatibility }}
+          BUMP: ${{ inputs.bump }}
+          BASE: ${{ steps.version.outputs.base }}
+          BASE_MAJOR: ${{ steps.version.outputs.base_major }}
+          VERSION: ${{ steps.version.outputs.version_tag }}
+          GORELEASE: ${{ steps.gorelease.outputs.path }}
+          GORELEASE_GOROOT: ${{ steps.gorelease.outputs.goroot }}
+        run: |
+          set -uo pipefail
+          case "$MODE" in
+            enforce|report) ;;
+            *) echo "::error::api-compatibility must be enforce or report, got '$MODE'"; exit 1 ;;
+          esac
+          report="$RUNNER_TEMP/gorelease.txt"; errlog="$RUNNER_TEMP/gorelease.err"
+          : > "$report"; : > "$errlog"
+          code=0
+          if [ -z "$GORELEASE" ] || [ ! -x "$GORELEASE" ]; then
+            echo "gorelease: not installed ('$GORELEASE')" > "$errlog"; code=127
+          else
+            PATH="$GORELEASE_GOROOT/bin:$PATH" GOWORK=off "$GORELEASE" -base="$BASE" -version="$VERSION" > "$report" 2> "$errlog" || code=$?
+          fi
+          incompatible=false; compatible=false
+          grep -q '^## incompatible changes' "$report" && incompatible=true
+          grep -q '^## compatible changes' "$report" && compatible=true
+          # Exit 0: valid. Exit 1 with a summary: gorelease rejected the
+          # version. Anything else: the tool did not reach a result, which is
+          # not an incompatibility and not a pass.
+          if [ "$code" -eq 0 ]; then
+            result=pass
+          elif [ "$code" -eq 1 ] && grep -q '^# summary' "$report"; then
+            result=incompatible; reason="gorelease rejects $VERSION against $BASE"
+          else
+            result=error; reason="gorelease did not reach a result (exit $code): $(tail -n 1 "$errlog")"
+          fi
+          # gorelease never rejects against a v0 base; the v0 rules of
+          # ADR-0017 are read from its report.
+          v0_breaking=false
+          if [ "$result" = pass ] && [ "$BASE" != none ] && [ "$BASE_MAJOR" = 0 ]; then
+            if [ "$BUMP" = patch ] && { [ "$incompatible" = true ] || [ "$compatible" = true ]; }; then
+              result=incompatible; reason="a v0 patch must not change the exported API ($VERSION against $BASE)"
+            elif [ "$incompatible" = true ]; then
+              v0_breaking=true
+            fi
+          fi
+          {
+            echo "result=$result"
+            echo "exit_code=$code"
+            echo "incompatible=$incompatible"
+            echo "compatible=$compatible"
+            echo "v0_breaking=$v0_breaking"
+            echo "report=$report"
+          } >> "$GITHUB_OUTPUT"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## API compatibility: $result"
+              echo
+              echo "\`gorelease -base=$BASE -version=$VERSION\` exited $code (mode: $MODE)."
+              echo
+              echo '```text'
+              cat "$report" "$errlog"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$report"; cat "$errlog" >&2
+          if [ "$result" = pass ]; then
+            echo "API compatibility: $VERSION against $BASE passes"
+          elif [ "$MODE" = enforce ]; then
+            echo "::error::$reason. No tag was created."
+            exit 1
+          else
+            echo "::warning::$reason (api-compatibility: report, releasing anyway)"
+          fi
+
       - name: Generate release notes
         id: notes
         shell: bash
         env:
           PREV_TAG: ${{ steps.version.outputs.previous_tag }}
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.version.outputs.version_tag }}
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/release-notes.md"
@@ -258,16 +664,175 @@ jobs:
             {
               echo "## Changes since ${PREV_TAG}"
               echo
-              if [ "$PREV_TAG" = "v0.0.0" ]; then
-                git log --pretty=format:"- %s (%h)"
+              if git rev-parse -q --verify "refs/tags/${PREV_TAG}" >/dev/null; then
+                git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)" -- .
               else
-                git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)"
+                git log --pretty=format:"- %s (%h)" -- .
               fi
             } > "$out"
           fi
 
           echo "file=$out"                       >> "$GITHUB_OUTPUT"
           echo "used_release_md=$used_release_md" >> "$GITHUB_OUTPUT"
+
+      - name: Check v0 breaking notes
+        id: v0notes
+        if: steps.api.outputs.v0_breaking == 'true'
+        shell: bash
+        env:
+          MODE: ${{ inputs.api-compatibility }}
+          VERSION: ${{ steps.version.outputs.version_tag }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+          USED_RELEASE_MD: ${{ steps.notes.outputs.used_release_md }}
+        run: |
+          set -euo pipefail
+          if [ "$USED_RELEASE_MD" = true ] && grep -Eq '^### Breaking' "$NOTES_FILE"; then
+            echo "documented=true" >> "$GITHUB_OUTPUT"
+            echo "v0 incompatible changes in $VERSION are listed under ### Breaking"
+            exit 0
+          fi
+          echo "documented=false" >> "$GITHUB_OUTPUT"
+          msg="$VERSION has incompatible API changes against a v0 base; its RELEASE.md section needs a '### Breaking' heading with the consumer assessment"
+          if [ "$MODE" = enforce ]; then
+            echo "::error::$msg. No tag was created."
+            exit 1
+          fi
+          echo "::warning::$msg (api-compatibility: report)"
+
+      - name: Download consumer results
+        if: needs.consumers.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: consumer-results
+          path: ${{ runner.temp }}/consumers
+
+      - name: Write release evidence
+        id: evidence
+        # Also after a gate failure, so a stopped release has its evidence.
+        if: ${{ !cancelled() && steps.version.outcome == 'success' }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          MODULE_PATH: ${{ steps.module.outputs.path }}
+          MODULE_DIR: ${{ steps.module.outputs.dir }}
+          PREFIX: ${{ steps.module.outputs.prefix }}
+          BUMP: ${{ inputs.bump }}
+          BASE: ${{ steps.version.outputs.base }}
+          PREV_TAG: ${{ steps.version.outputs.previous_tag }}
+          VERSION: ${{ steps.version.outputs.version_tag }}
+          TAG: ${{ steps.version.outputs.tag }}
+          MODE: ${{ inputs.api-compatibility }}
+          API_RESULT: ${{ steps.api.outputs.result }}
+          API_EXIT: ${{ steps.api.outputs.exit_code }}
+          API_REPORT: ${{ steps.api.outputs.report }}
+          V0_BREAKING: ${{ steps.api.outputs.v0_breaking }}
+          V0_DOCUMENTED: ${{ steps.v0notes.outputs.documented }}
+          GORELEASE_VERSION: ${{ inputs.gorelease-version }}
+          GORELEASE_GO: ${{ steps.gorelease.outputs.go }}
+          TEST_PACKAGES: ${{ steps.pkgs.outputs.list }}
+          VET_OUTCOME: ${{ steps.vet.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          RACE_OUTCOME: ${{ steps.race.outcome }}
+          API_OUTCOME: ${{ steps.api.outcome }}
+          TAG_EXISTS_OUTCOME: ${{ steps.tagcheck.outcome }}
+          CONSUMERS_RESULT: ${{ needs.consumers.result }}
+          NOTES_FROM_RELEASE_MD: ${{ steps.notes.outputs.used_release_md }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release-evidence.json"
+          GO_VERSION=$(go env GOVERSION) OUT="$out" python3 - <<'PY'
+          import datetime, hashlib, json, os, pathlib, re
+
+          e = os.environ
+
+
+          def outcome(name):
+              # success / failure / skipped / "" (did not run) -> pass / fail / not run
+              return {"success": "pass", "failure": "fail"}.get(e.get(name, ""), "not run")
+
+
+          def api_changes(path):
+              # gorelease prints "# <package>", then "## incompatible changes" and
+              # "## compatible changes" sections, then "# summary".
+              found, pkg, cur = {"incompatible": [], "compatible": []}, "", None
+              if not path or not os.path.exists(path):
+                  return found
+              for line in pathlib.Path(path).read_text().splitlines():
+                  if line.startswith("## "):
+                      cur = {"## incompatible changes": "incompatible", "## compatible changes": "compatible"}.get(line.strip())
+                  elif line.startswith("# "):
+                      pkg, cur = ("" if line.strip() == "# summary" else line[2:].strip()), None
+                  elif cur and line.strip():
+                      found[cur].append(f"{pkg}: {line.strip()}" if pkg else line.strip())
+              return found
+
+
+          def recorded(rel):
+              f = pathlib.Path(e.get("GITHUB_WORKSPACE", ".")) / rel
+              if not f.exists():
+                  return {"file": rel, "present": False}
+              text = f.read_text()
+              return {"file": rel, "present": True, "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                      "rules": sorted(set(re.findall(r"rule:\s*['\"]?([A-Z]+-[A-Z0-9]+)", text)))}
+
+
+          consumers = {"requested": e["CONSUMERS_RESULT"] != "skipped", "job": e["CONSUMERS_RESULT"], "results": []}
+          results = pathlib.Path(e["RUNNER_TEMP"]) / "consumers" / "consumer-results.jsonl"
+          if results.exists():
+              consumers["results"] = [json.loads(l) for l in results.read_text().splitlines() if l.strip()]
+
+          base = e["BASE"]
+          api_ran = e.get("API_RESULT", "") != ""
+          not_run = ("not run by the release workflow: go-ci runs it on pull requests and pushes; "
+                     "only a go-ci run of this exact commit is evidence for this release")
+          evidence = {
+              "schema": "otfabric-release-evidence-v1",
+              "repository": e["REPOSITORY"],
+              "commit": e["SHA"],
+              "workflow": {"ref": e["WORKFLOW_REF"], "run": e["RUN_URL"]},
+              "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "module": {"path": e["MODULE_PATH"], "dir": e["MODULE_DIR"], "tag_prefix": e["PREFIX"]},
+              "previous_version": None if base == "none" else base,
+              "previous_tag": None if base == "none" else e["PREV_TAG"],
+              "proposed_version": e["VERSION"],
+              "tag": e["TAG"],
+              "bump": e["BUMP"],
+              "tag_free": outcome("TAG_EXISTS_OUTCOME"),
+              "api_compatibility": {
+                  "mode": e["MODE"],
+                  "tool": "golang.org/x/exp/cmd/gorelease@" + e["GORELEASE_VERSION"],
+                  "tool_go": e.get("GORELEASE_GO", ""),
+                  "base": base,
+                  "result": e["API_RESULT"] if api_ran else ("error" if e.get("API_OUTCOME") == "failure" else "not run"),
+                  "exit_code": int(e["API_EXIT"]) if e.get("API_EXIT") else None,
+                  "v0_breaking": e.get("V0_BREAKING") == "true",
+                  "v0_breaking_documented": (e.get("V0_DOCUMENTED") == "true") if e.get("V0_BREAKING") == "true" else None,
+                  "changes": api_changes(e.get("API_REPORT", "")),
+              },
+              "go": {"tested_with": e["GO_VERSION"],
+                     "note": "the toolchain selected by the module's go.mod; the Go version matrix runs in go-ci"},
+              "tests": {"packages": e["TEST_PACKAGES"].split(), "vet": outcome("VET_OUTCOME"),
+                        "test": outcome("TEST_OUTCOME"), "race": outcome("RACE_OUTCOME")},
+              "consumers": consumers,
+              "release_notes": {"source": {"true": "RELEASE.md", "false": "commit log"}.get(e.get("NOTES_FROM_RELEASE_MD", ""), "not run")},
+              "exceptions": recorded(".otfabric/exceptions.yaml"),
+              "baseline": recorded(".otfabric/baseline.yaml"),
+              "not_run": {k: not_run for k in ("coverage", "govulncheck", "lint", "fuzz", "interop")},
+          }
+          pathlib.Path(e["OUT"]).write_text(json.dumps(evidence, indent=2) + "\n")
+          PY
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          cat "$out"
+
+      - name: Upload release evidence
+        if: ${{ !cancelled() && steps.evidence.outputs.file != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-evidence
+          path: ${{ steps.evidence.outputs.file }}
 
       - name: Create and push annotated tag
         shell: bash
@@ -300,6 +865,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           PREFIX: ${{ inputs.release-name-prefix }}
           NOTES_FILE: ${{ steps.notes.outputs.file }}
+          EVIDENCE: ${{ steps.evidence.outputs.file }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -313,14 +879,20 @@ jobs:
             --verify-tag \
             --title "$title" \
             --notes-file "$NOTES_FILE" \
-            --target "$SHA"
+            --target "$SHA" \
+            "$EVIDENCE"
 
       - name: Release summary
         shell: bash
         env:
           BUMP: ${{ inputs.bump }}
+          MODULE_PATH: ${{ steps.module.outputs.path }}
           PREV_TAG: ${{ steps.version.outputs.previous_tag }}
+          BASE: ${{ steps.version.outputs.base }}
           TAG: ${{ steps.version.outputs.tag }}
+          API_RESULT: ${{ steps.api.outputs.result }}
+          MODE: ${{ inputs.api-compatibility }}
+          CONSUMERS_RESULT: ${{ needs.consumers.result }}
           MAJOR_TAG_UPDATED: ${{ inputs.update-major-tag }}
           USED_RELEASE_MD: ${{ steps.notes.outputs.used_release_md }}
         run: |
@@ -330,9 +902,14 @@ jobs:
             echo "| Item | Value |"
             echo "|------|-------|"
             echo "| Repository | \`${{ github.repository }}\` |"
+            echo "| Module | \`$MODULE_PATH\` |"
             echo "| Bump | $BUMP |"
             echo "| Previous tag | $PREV_TAG |"
+            echo "| API base | $BASE |"
+            echo "| API compatibility | $API_RESULT ($MODE) |"
+            echo "| Consumers | $CONSUMERS_RESULT |"
             echo "| New tag | $TAG |"
             echo "| Major tag updated | $MAJOR_TAG_UPDATED |"
             echo "| Notes from RELEASE.md | $USED_RELEASE_MD |"
+            echo "| Evidence | release-evidence.json (release asset) |"
           } >> "$GITHUB_STEP_SUMMARY"

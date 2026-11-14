@@ -291,3 +291,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: scripts/selftest/rollout.sh
+
+  # go-package-release.yml's API gate (otfabric/engineering ADR-0017):
+  # previous-version resolution, the pinned gorelease, the v0 rules, the
+  # evidence file and the step order, on fixture repositories and a file://
+  # module proxy. Nothing is tagged or pushed.
+  release-gate:
+    name: Release API gate cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache: false
+      - name: Install the pinned gorelease
+        run: |
+          pin=$(awk '/^      gorelease-version:/ { f = 1 } f && $1 == "default:" { print $2; exit }' .github/workflows/go-package-release.yml)
+          GOBIN="$RUNNER_TEMP/bin" GOFLAGS= go install "golang.org/x/exp/cmd/gorelease@$pin"
+          echo "GORELEASE=$RUNNER_TEMP/bin/gorelease" >> "$GITHUB_ENV"
+      - run: scripts/selftest/release-gate.sh
+
+  # go-package-release.yml's consumers job: a consumer that no longer compiles
+  # stops the release and is named with its revision.
+  release-consumers:
+    name: Release consumer cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - run: scripts/selftest/consumers.sh
