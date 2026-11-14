@@ -1,0 +1,15 @@
+name: Soak
+on:
+  push:
+    branches: ["soak/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: make soak

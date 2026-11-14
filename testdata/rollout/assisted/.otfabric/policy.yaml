@@ -1,0 +1,4 @@
+policy: "1.6"
+profile: interoperability
+mode: enforce
+owner: otfabric

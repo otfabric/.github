@@ -1,0 +1,48 @@
+name: CI
+run-name: "CI (${{ github.event_name }}) on ${{ github.ref_name }}"
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**/*.md"]
+  pull_request:
+    paths-ignore: ["**/*.md"]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image tag to test"
+        default: ""
+      mode:
+        description: Which stacks
+        type: choice
+        options:
+          - all
+          - fast
+        default: fast
+      soak:
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # A pull request from a fork has no token.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    steps:
+      - run: make test MODE="${{ inputs.mode }}"
+
+  report:
+    needs: test
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - run: echo report

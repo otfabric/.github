@@ -1,0 +1,19 @@
+name: Fixtures
+on:
+  pull_request:
+    paths:
+      - "fixtures/**"
+  push:
+    branches: [main]
+    paths:
+      - "fixtures/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make validate-fixtures

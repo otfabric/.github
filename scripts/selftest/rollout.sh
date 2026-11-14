@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Run scripts/rollout/pr-workflow.py on the fixtures in testdata/rollout: a
-# repository it can prepare and one it must refuse. Dry runs write nothing,
-# --write produces the PR workflow layout, a second run changes nothing.
+# repository it can prepare, one it must refuse, and one it prepares once a
+# person has lifted a refusal. Dry runs write nothing, --write produces the
+# PR workflow layout, a second run changes nothing.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 tool=(python3 -I scripts/rollout/pr-workflow.py)
-cp -R testdata/rollout/ready testdata/rollout/manual "$tmp/"
+cp -R testdata/rollout/ready testdata/rollout/manual testdata/rollout/assisted "$tmp/"
 fail() { echo "FAIL $*"; exit 1; }
 
 # Dry run: the plan and the new pr.yml, no file touched.
@@ -55,9 +56,38 @@ echo "ok   a second run changes nothing"
 got=0
 "${tool[@]}" apply "$tmp/manual" --write > "$tmp/manual.log" || got=$?
 [ "$got" = 3 ] || fail "manual: exit $got, want 3"
-grep -q "concurrency group" "$tmp/manual.log" && grep -q "reads github\." "$tmp/manual.log" || fail "manual: reasons"
+grep -q "concurrency group has no name of its own" "$tmp/manual.log" && grep -q "reads github\.ref" "$tmp/manual.log" || fail "manual: reasons"
 diff -r testdata/rollout/manual "$tmp/manual" > /dev/null || fail "manual: a file was written"
 echo "ok   a repository that needs a person is refused, untouched"
+
+# A schedule, dispatch inputs, a named concurrency group, a job that asks for
+# more permissions, a path filter and a workflow for other branches only.
+a="$tmp/assisted"; awf="$a/.github/workflows"
+got=0
+"${tool[@]}" apply "$a" --write > "$tmp/assisted.log" || got=$?
+[ "$got" = 3 ] || fail "assisted without flags: exit $got, want 3"
+grep -q "fixtures.yml: a \`paths:\` filter" "$tmp/assisted.log" || fail "assisted: path filter not refused"
+if grep -q "ci.yml:" "$tmp/assisted.log"; then fail "assisted: ci.yml refused: $(grep 'ci.yml:' "$tmp/assisted.log")"; fi
+diff -r testdata/rollout/assisted "$a" > /dev/null || fail "assisted: a refused run wrote a file"
+echo "ok   a path filter is refused until a person lifts it"
+
+"${tool[@]}" apply "$a" --write --paths-as-code fixtures.yml --code-path 'docs/reference/*' > "$tmp/assisted.log" \
+  || fail "assisted with --paths-as-code: $(cat "$tmp/assisted.log")"
+wf="$awf"
+[ "$(on ci.yml)" = 'schedule:,-cron:"173***",workflow_call:,inputs:,version:,description:"Imagetagtotest",type:string,default:"",mode:,description:Whichstacks,type:string,default:fast,soak:,type:boolean,default:false,workflow_dispatch:,inputs:,version:,description:"Imagetagtotest",default:"",mode:,description:Whichstacks,type:choice,options:,-all,-fast,default:fast,soak:,type:boolean' ] \
+  || fail "assisted ci.yml on: $(on ci.yml)"
+[ "$(on fixtures.yml)" = "workflow_call:,workflow_dispatch:" ] || fail "assisted fixtures.yml on: $(on fixtures.yml)"
+[ "$(on policy.yml)" = "push:,branches:[main],workflow_call:,workflow_dispatch:" ] || fail "assisted policy.yml on: $(on policy.yml)"
+cmp -s testdata/rollout/assisted/.github/workflows/soak.yml "$awf/soak.yml" || fail "assisted: soak.yml (other branches only) changed"
+apr="$awf/pr.yml"
+sed -n '/^  ci:/,/^$/p' "$apr" | grep -qx "      issues: write" || fail "assisted pr.yml: the ci job does not grant issues: write"
+sed -n '/^  ci:/,/^$/p' "$apr" | grep -qx "      contents: read" || fail "assisted pr.yml: the ci job does not grant contents: read"
+grep -qx "        docs/reference/\*" "$apr" || fail "assisted pr.yml: --code-path missing"
+grep -qx "          required: changes policy" "$apr" || fail "assisted pr.yml: required: $(grep 'required:' "$apr")"
+grep -qx "          required-for-code: ci fixtures" "$apr" || fail "assisted pr.yml: required-for-code"
+sed -n '/^  policy:/,/^$/p' "$apr" | grep -qx "    secrets: inherit" || fail "assisted pr.yml: policy without secrets"
+if grep -q "soak" "$apr"; then fail "assisted pr.yml calls soak.yml"; fi
+echo "ok   schedule kept, dispatch inputs repeated, job permissions granted, flags applied"
 
 mkdir "$tmp/ws"
 for r in ready manual; do cp -R "testdata/rollout/$r" "$tmp/ws/$r"; mkdir "$tmp/ws/$r/.git"; done
