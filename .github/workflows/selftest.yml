@@ -13,6 +13,7 @@ on:
       - ".github/workflows/**"
       - "actions/**"
       - "scripts/selftest/**"
+      - "scripts/rollout/**"
       - "testdata/**"
   push:
     branches: [main]
@@ -281,3 +282,12 @@ jobs:
           changes-job: pr-changes-live
           required: pr-changes-live gate-fixture-light
           required-for-code: gate-fixture-heavy-code
+
+  # scripts/rollout/pr-workflow.py on a repository it prepares and one it refuses.
+  rollout-cases:
+    name: Rollout tool cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/selftest/rollout.sh

@@ -8,5 +8,6 @@ Shared GitHub configuration of the OT Fabric organisation.
 | [`actions/`](actions/README.md) | Composite actions: `required-gate` (the required check of a PR workflow), and the upstream check of the `*-interop` repositories |
 | `profile/` | The organisation profile page |
 | `scripts/selftest/`, `testdata/` | Selftest of the workflows (`selftest.yml`) |
+| [`scripts/rollout/`](scripts/rollout/README.md) | Plans and prepares the move of repositories to the PR workflow |
 
 Reference a workflow by release tag: `@v3.1.0`, or the floating `@v2` / `@v3`. `v1` is an old workflow tag.
